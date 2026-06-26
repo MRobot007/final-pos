@@ -32,12 +32,12 @@ function get_db(): PDO {
 
     $pdo = new PDO($dsn, $CONFIG['db']['user'], $CONFIG['db']['pass'], $options);
 
-    // Some managed MySQL providers (e.g. Aiven) enable ANSI_QUOTES, under which
-    // "..." is an identifier rather than a string literal. The app's bootstrap
-    // DDL and queries use double-quoted string values (written against MariaDB's
-    // default mode), so drop ANSI_QUOTES for the session to keep them valid.
+    // This app was written against MariaDB's permissive default SQL mode. Managed
+    // MySQL 8 (e.g. Aiven) ships stricter modes — notably ANSI_QUOTES (which makes
+    // the app's double-quoted string literals fail) and ONLY_FULL_GROUP_BY. Clear
+    // the session sql_mode so the existing SQL runs unchanged.
     try {
-        $pdo->exec("SET SESSION sql_mode = REPLACE(@@SESSION.sql_mode, 'ANSI_QUOTES', '')");
+        $pdo->exec("SET SESSION sql_mode = ''");
     } catch (Throwable $e) {
         // Non-fatal: if sql_mode can't be adjusted, continue with the default.
     }
