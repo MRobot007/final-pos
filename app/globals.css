@@ -106,3 +106,38 @@
   opacity: 0;
   animation: entryFade 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
+
+/* Line-chart draw-in animation */
+@keyframes slcDraw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+.slc-line {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: slcDraw 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+.slc-area {
+  opacity: 0;
+  animation: slcFade 0.9s ease forwards;
+}
+@keyframes slcFade {
+  to { opacity: 1; }
+}
+
+/* Compact typography on mobile/tablet — every section's text scales down on small
+   screens (Tailwind sizes are rem-based). Desktop (lg: 1024px and up) is untouched. */
+@media (max-width: 1023.98px) {
+  html {
+    font-size: 14px;
+  }
+}
+
+/* Horizontal scroll strips (mobile action pills) with no visible scrollbar */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}

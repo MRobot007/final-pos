@@ -41,8 +41,10 @@ CREATE TABLE IF NOT EXISTS products (
   cost_price DECIMAL(10,2) DEFAULT 0,
   price DECIMAL(10,2) NOT NULL DEFAULT 0,
   stock INT NOT NULL DEFAULT 0,
+  supplier_id INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX(category_id),
+  INDEX(supplier_id),
   UNIQUE KEY uniq_sku (sku),
   FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -62,7 +64,7 @@ CREATE TABLE IF NOT EXISTS sales (
   subtotal DECIMAL(10,2) NOT NULL,
   tax DECIMAL(10,2) NOT NULL,
   total DECIMAL(10,2) NOT NULL,
-  payment_method ENUM('cash','card','split') NOT NULL,
+  payment_method ENUM('cash','card','split','upi','wallet') NOT NULL,
   age_verified TINYINT(1) DEFAULT 0,
   receipt_number VARCHAR(50),
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

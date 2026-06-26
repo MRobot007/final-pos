@@ -14,10 +14,23 @@ function get_db(): PDO {
         $CONFIG['db']['charset']
     );
 
-    $pdo = new PDO($dsn, $CONFIG['db']['user'], $CONFIG['db']['pass'], [
+    $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
+    ];
+
+    // Managed MySQL providers (Aiven, Railway, TiDB, etc.) require a TLS
+    // connection. Enable it with DB_SSL=1; supply DB_SSL_CA to verify the
+    // server certificate, otherwise connect over TLS without strict verify.
+    if (!empty($CONFIG['db']['ssl'])) {
+        if (!empty($CONFIG['db']['ssl_ca'])) {
+            $options[PDO::MYSQL_ATTR_SSL_CA] = $CONFIG['db']['ssl_ca'];
+        } else {
+            $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
+        }
+    }
+
+    $pdo = new PDO($dsn, $CONFIG['db']['user'], $CONFIG['db']['pass'], $options);
 
     return $pdo;
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, Suspense, useCallback } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Package, AlertTriangle, ArrowLeft } from 'lucide-react'
@@ -9,7 +9,34 @@ import { API_URL } from '@/lib/api-config'
 
 export default function ProductsPage() {
     const [categories, setCategories] = useState<{ label: string, value: string }[]>([])
+    const [suppliers, setSuppliers] = useState<{ label: string, value: string }[]>([])
     const apiUrl = API_URL
+
+    useEffect(() => {
+        const fetchSuppliers = async () => {
+            try {
+                if (!apiUrl) return
+                const token = localStorage.getItem('token')
+                if (!token) return
+                const res = await fetch(`${apiUrl}/admin/suppliers`, {
+                    method: 'GET',
+                    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    cache: 'no-store'
+                })
+                const data = await res.json()
+                if (Array.isArray(data)) {
+                    setSuppliers(data.map((s: any) => ({
+                        label: s.email ? `${s.name} — ${s.email}` : s.name,
+                        value: s.id.toString()
+                    })))
+                }
+            } catch (err) {
+                console.error(err)
+            }
+        }
+        fetchSuppliers()
+    }, [apiUrl])
 
     useEffect(() => {
         const fetchCategories = async () => {
@@ -61,25 +88,14 @@ export default function ProductsPage() {
 
     return (
         <Suspense fallback={<div className="p-8 text-center text-purple-600 font-black uppercase tracking-widest animate-pulse">Initializing Assets...</div>}>
-            <ProductsContent categories={categories} />
+            <ProductsContent categories={categories} suppliers={suppliers} />
         </Suspense>
     )
 }
 
-function ProductsContent({ categories }: { categories: { label: string, value: string }[] }) {
+function ProductsContent({ categories, suppliers }: { categories: { label: string, value: string }[], suppliers: { label: string, value: string }[] }) {
     const searchParams = useSearchParams()
     const filter = searchParams.get('filter')
-
-    const lowStockFilter = useCallback((data: any[]) => {
-        if (filter === 'low_stock') {
-            return data.filter(item => {
-                const stock = Number(item.stock || 0)
-                const threshold = Number(item.lowStockThreshold || 10)
-                return stock <= threshold
-            })
-        }
-        return data
-    }, [filter])
 
     return (
         <AdminResourceTemplate
@@ -90,7 +106,8 @@ function ProductsContent({ categories }: { categories: { label: string, value: s
             apiPath="/admin/products"
             csvPath="/csv/products"
             showBulkDelete={true}
-            customFilter={lowStockFilter}
+            serverPaginated={true}
+            serverParams={filter === 'low_stock' ? { low_stock: '1' } : undefined}
             headerActions={
                 filter === 'low_stock' ? (
                     <Link
@@ -128,6 +145,12 @@ function ProductsContent({ categories }: { categories: { label: string, value: s
                     type: 'select',
                     options: categories,
                     required: true
+                },
+                {
+                    label: 'Supplier (for purchase orders)',
+                    key: 'supplierId',
+                    type: 'select',
+                    options: suppliers
                 },
                 { label: 'Market Price ($)', key: 'price', type: 'number', required: true },
                 { label: 'Maximum Retail Price (MRP)', key: 'mrp', type: 'number' },

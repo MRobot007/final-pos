@@ -14,6 +14,8 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { API_URL } from '@/lib/api-config'
+import { SalesLineChart } from '@/components/SalesLineChart'
+import { ExportReportModal } from '@/components/ExportReportModal'
 
 interface DashboardStats {
     totalProducts: number
@@ -32,9 +34,15 @@ interface DashboardStats {
     }
 }
 
+type ChartPeriod = 'today' | 'weekly' | 'monthly' | 'overall'
+
 export default function DashboardPage() {
     const [data, setData] = useState<DashboardStats | null>(null)
     const [loading, setLoading] = useState(true)
+    const [period, setPeriod] = useState<ChartPeriod>('weekly')
+    const [chart, setChart] = useState<{ label: string; value: number }[]>([])
+    const [chartLoading, setChartLoading] = useState(true)
+    const [showExport, setShowExport] = useState(false)
 
     const apiUrl = API_URL
 
@@ -94,18 +102,38 @@ export default function DashboardPage() {
         fetchDashboardData()
     }, [fetchDashboardData])
 
-    const chartData = useMemo(() => {
-        if (!data?.chartData) return []
-        return data.chartData.map(item => ({
-            label: String(item.label ?? ''),
-            value: Number(item.value ?? 0)
-        }))
-    }, [data])
+    // Sales chart: fetched per selected period (today / weekly / monthly / overall).
+    const fetchChart = useCallback(async (p: ChartPeriod) => {
+        if (!apiUrl) return
+        const token = localStorage.getItem('token')
+        if (!token) return
+        try {
+            setChartLoading(true)
+            const res = await fetch(`${apiUrl}/admin/sales-chart?period=${p}`, {
+                headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+                credentials: 'include',
+                cache: 'no-store'
+            })
+            if (res.ok) {
+                const j = await res.json()
+                setChart(Array.isArray(j?.chartData) ? j.chartData : [])
+            }
+        } catch (err) {
+            console.error('Chart fetch error:', err)
+        } finally {
+            setChartLoading(false)
+        }
+    }, [apiUrl])
 
-    const chartMax = useMemo(() => {
-        if (chartData.length === 0) return 1
-        return Math.max(...chartData.map(item => item.value), 1)
-    }, [chartData])
+    useEffect(() => {
+        fetchChart(period)
+    }, [period, fetchChart])
+
+    const chartData = useMemo(
+        () => chart.map(item => ({ label: String(item.label ?? ''), value: Number(item.value ?? 0) })),
+        [chart]
+    )
+
 
     const stats = [
         {
@@ -147,11 +175,14 @@ export default function DashboardPage() {
             {/* Welcome Section */}
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                 <div className="animate-entry">
-                    <h2 className="text-3xl font-black text-dark font-outfit uppercase tracking-tight">System Intelligence 👋</h2>
-                    <p className="text-purple-900 mt-1 italic text-sm font-semibold">Real-time performance metrics and business analytics.</p>
+                    <h2 className="text-2xl font-black text-black font-outfit uppercase tracking-tight">Dashboard</h2>
+                    <p className="text-purple-500 mt-1 text-sm font-semibold">Real-time performance metrics and business analytics.</p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <button className="px-5 py-2.5 rounded-xl bg-white border border-purple-100 text-purple-700 font-black uppercase text-[10px] tracking-widest shadow-sm hover:bg-purple-50 transition-all">
+                    <button
+                        onClick={() => setShowExport(true)}
+                        className="px-5 py-2.5 rounded-xl bg-white border border-purple-100 text-purple-700 font-black uppercase text-[10px] tracking-widest shadow-sm hover:bg-purple-50 transition-all"
+                    >
                         Export Report
                     </button>
                     <Link href="/" className="premium-button flex items-center gap-2 uppercase text-[10px] tracking-widest font-black shadow-lg shadow-primary/20">
@@ -162,35 +193,35 @@ export default function DashboardPage() {
             </div>
             {/* Low Stock Alert */}
             {data && data.lowStockProducts > 0 && (
-                <div className="bg-red-50 border border-red-100 rounded-[32px] p-6 flex items-center justify-between animate-entry shadow-sm">
-                    <div className="flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-2xl bg-red-500/10 text-red-600 flex items-center justify-center">
-                            <AlertTriangle size={24} />
+                <div className="bg-red-50 border border-red-100 rounded-2xl p-4 flex items-center justify-between animate-entry">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-red-500/10 text-red-600 flex items-center justify-center">
+                            <AlertTriangle size={20} />
                         </div>
                         <div>
                             <h4 className="text-sm font-black text-red-600 uppercase tracking-tight">Inventory Alert</h4>
                             <p className="text-xs text-red-600 font-bold uppercase tracking-widest">{data.lowStockProducts} products are currently below safety stock levels.</p>
                         </div>
                     </div>
-                    <Link href="/admin/products?filter=low_stock" className="px-6 py-3 bg-red-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-lg shadow-red-200">
-                        View Low Stock Assets
+                    <Link href="/admin/products?filter=low_stock" className="px-5 py-2.5 bg-red-600 text-white rounded-xl text-[10px] font-black uppercase tracking-widest hover:bg-red-700 transition-all shadow-sm">
+                        View Low Stock
                     </Link>
                 </div>
             )}
 
             {/* Stats Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 lg:gap-4">
                 {stats.map((stat, i) => (
-                    <div key={i} className="stat-card glass-card rounded-[32px] p-8 group hover:border-primary/20 transition-all duration-500 relative overflow-hidden bg-white/80 border-purple-50 shadow-xl">
-                        <div className="flex items-start justify-between mb-6">
+                    <div key={i} className="bg-white rounded-2xl p-4 lg:p-5 border border-purple-100 shadow-sm hover:shadow-md hover:border-primary/30 transition-all">
+                        <div className="flex items-start justify-between mb-3 lg:mb-5">
                             <div className={cn(
-                                "w-12 h-12 rounded-2xl flex items-center justify-center transition-transform duration-500 group-hover:scale-110 group-hover:rotate-6",
+                                "w-11 h-11 rounded-xl flex items-center justify-center",
                                 stat.color === 'primary' ? "bg-primary/10 text-primary" :
                                     stat.color === 'accent' ? "bg-accent/10 text-accent" :
                                         stat.color === 'purple' ? "bg-purple-500/10 text-purple-600" :
                                             "bg-indigo-500/10 text-indigo-600"
                             )}>
-                                <stat.icon size={24} />
+                                <stat.icon size={22} />
                             </div>
                             <div className={cn(
                                 "flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] font-black uppercase tracking-tight",
@@ -200,61 +231,46 @@ export default function DashboardPage() {
                                 {stat.trend}
                             </div>
                         </div>
-                        <div className="relative z-10">
-                            <p className="text-purple-900 text-[10px] font-black uppercase tracking-[0.2em] leading-none mb-2">{stat.label}</p>
-                            <h3 className="text-2xl font-black text-primary font-outfit tracking-tighter">{stat.value}</h3>
-                        </div>
-                        <div className={cn(
-                            "absolute bottom-[-20px] right-[-20px] w-24 h-24 blur-[60px] opacity-0 group-hover:opacity-10 transition-opacity duration-700",
-                            stat.color === 'primary' ? "bg-primary" :
-                                stat.color === 'accent' ? "bg-accent" :
-                                    stat.color === 'purple' ? "bg-purple-500" :
-                                        "bg-indigo-500"
-                        )} />
+                        <p className="text-purple-500 text-[10px] font-black uppercase tracking-[0.15em] leading-none mb-1.5">{stat.label}</p>
+                        <h3 className="text-xl lg:text-2xl font-black text-black font-outfit tracking-tight">{stat.value}</h3>
                     </div>
                 ))}
             </div>
 
             {/* Main Analytics Section */}
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 pb-8">
-                <div className="lg:col-span-2 glass-card rounded-[32px] p-8 overflow-hidden relative border-purple-50 shadow-xl bg-white/80">
-                    <div className="flex items-center justify-between mb-8">
+                <div className="lg:col-span-2 bg-white rounded-2xl p-6 border border-purple-100 shadow-sm">
+                    <div className="flex items-center justify-between mb-6">
                         <div>
-                            <h3 className="text-xl font-black text-primary font-outfit uppercase tracking-tight">Revenue Trajectory</h3>
-                            <p className="text-purple-900 text-xs italic font-semibold">Operational walkthrough of financial metrics</p>
+                            <h3 className="text-lg font-black text-black font-outfit uppercase tracking-tight">Revenue Trajectory</h3>
+                            <p className="text-purple-500 text-xs font-semibold">Sales over the selected period</p>
                         </div>
-                        <select className="bg-purple-50/50 border border-purple-100 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-purple-700 outline-none cursor-pointer hover:bg-purple-100 transition-colors">
-                            <option>Last 7 Days</option>
-                            <option>Monthly Trend</option>
+                        <select
+                            value={period}
+                            onChange={(e) => setPeriod(e.target.value as ChartPeriod)}
+                            className="bg-purple-50/50 border border-purple-100 rounded-xl px-4 py-2 text-[10px] font-black uppercase tracking-widest text-purple-700 outline-none cursor-pointer hover:bg-purple-100 transition-colors"
+                        >
+                            <option value="today">Today</option>
+                            <option value="weekly">Weekly (7 Days)</option>
+                            <option value="monthly">Monthly (30 Days)</option>
+                            <option value="overall">Overall</option>
                         </select>
                     </div>
 
-                    <div className="h-[300px] flex items-end gap-3 px-2">
-                        {chartData.length === 0 ? (
-                            <div className="w-full h-full flex items-center justify-center text-purple-600 font-black uppercase tracking-[0.3em] text-[10px] opacity-60">
-                                No Chart Data
+                    <div className="h-[300px]">
+                        {chartLoading ? (
+                            <div className="w-full h-full flex items-center justify-center text-purple-400 font-black uppercase tracking-[0.3em] text-[10px] opacity-60 animate-pulse">
+                                Loading…
                             </div>
                         ) : (
-                            chartData.map((day, i) => {
-                                const height = (day.value / chartMax) * 250
-                                return (
-                                    <div key={i} className="flex-1 flex flex-col justify-end group cursor-pointer">
-                                        <div className="w-full bg-primary/10 rounded-t-xl group-hover:bg-primary/30 transition-all duration-300 relative border-t border-primary/10 shadow-sm" style={{ height: `${height}px` }}>
-                                            <div className="absolute top-[-30px] left-1/2 -translate-x-1/2 bg-primary text-white text-[10px] font-black px-2 py-1 rounded-md opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none tracking-tight">
-                                                ${day.value.toLocaleString()}
-                                            </div>
-                                        </div>
-                                        <span className="text-[10px] text-purple-800 font-bold text-center mt-3 uppercase tracking-tighter">{day.label}</span>
-                                    </div>
-                                )
-                            })
+                            <SalesLineChart data={chartData} />
                         )}
                     </div>
                 </div>
 
-                <div className="glass-card rounded-[32px] p-8 border-purple-50 shadow-xl bg-white/80">
-                    <h3 className="text-xl font-black text-primary font-outfit mb-6 uppercase tracking-tight">Live Ledger</h3>
-                    <div className="space-y-6">
+                <div className="bg-white rounded-2xl p-6 border border-purple-100 shadow-sm">
+                    <h3 className="text-lg font-black text-black font-outfit mb-5 uppercase tracking-tight">Recent Sales</h3>
+                    <div className="space-y-4">
                         {loading ? (
                             <div className="space-y-4">
                                 {[...Array(5)].map((_, i) => (
@@ -291,6 +307,8 @@ export default function DashboardPage() {
                     </div>
                 </div>
             </div>
+
+            {showExport && <ExportReportModal onClose={() => setShowExport(false)} />}
         </div>
     )
 }

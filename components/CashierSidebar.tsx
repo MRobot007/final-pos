@@ -76,8 +76,13 @@ export default function CashierSidebar({ className }: CashierSidebarProps) {
     const historyHref = role === 'OWNER' || role === 'MANAGER' ? '/admin/sales' : '/cashier/history'
 
     return (
-        <nav className={cn("w-24 border-r border-white/5 flex flex-col items-center py-8 gap-8 bg-[#09090B] shadow-2xl relative z-30 shrink-0 h-full", className)}>
-            <Link href="/admin">
+        <nav className={cn(
+            // Mobile: fixed bottom bar. Desktop (lg+): original left rail (unchanged).
+            "fixed bottom-0 inset-x-0 h-16 flex flex-row items-center justify-around px-4 gap-2 bg-[#09090B] border-t border-white/5 z-40 shadow-2xl",
+            "lg:static lg:inset-auto lg:w-24 lg:h-full lg:flex-col lg:items-center lg:justify-start lg:py-8 lg:gap-8 lg:px-0 lg:border-t-0 lg:border-r lg:shrink-0",
+            className
+        )}>
+            <Link href="/admin" className="hidden lg:block">
                 <div className="h-10 px-3 rounded-xl bg-primary border border-white/10 flex items-center justify-center shadow-md hover:opacity-90 transition-all group overflow-hidden">
                     <Image
                         src="/logo.avif"
@@ -89,7 +94,7 @@ export default function CashierSidebar({ className }: CashierSidebarProps) {
                 </div>
             </Link>
 
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-row gap-3 lg:flex-col lg:gap-4">
                 {/* Terminal Button */}
                 {pathname === '/' ? (
                     <button className="w-12 h-12 rounded-2xl bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20">
@@ -145,9 +150,9 @@ export default function CashierSidebar({ className }: CashierSidebarProps) {
                 )}
             </div>
 
-            <div className="mt-auto flex flex-col items-center gap-6 mb-4">
+            <div className="flex flex-row items-center gap-3 lg:mt-auto lg:flex-col lg:gap-6 lg:mb-4">
                 {/* User Role Badge */}
-                <div className="flex flex-col items-center gap-2">
+                <div className="hidden lg:flex flex-col items-center gap-2">
                     <div className="w-10 h-10 rounded-xl bg-purple-900/30 flex items-center justify-center text-[10px] font-black text-purple-400 border border-purple-800/50 shadow-inner" title={`Logged in as ${role}`}>
                         {role.substring(0, 1)}
                     </div>

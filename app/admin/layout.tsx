@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import Sidebar from '@/components/Sidebar'
-import { Bell, Search, User, Loader2 } from 'lucide-react'
+import { Bell, Search, User, Loader2, Menu } from 'lucide-react'
 import { API_URL } from '@/lib/api-config'
 
 export default function AdminLayout({
@@ -15,6 +15,7 @@ export default function AdminLayout({
     const pathname = usePathname()
     const [isAuthenticating, setIsAuthenticating] = useState(true)
     const [user, setUser] = useState<{ name: string; role: string } | null>(null)
+    const [mobileNavOpen, setMobileNavOpen] = useState(false)
 
     useEffect(() => {
         const checkAuth = async () => {
@@ -90,12 +91,23 @@ export default function AdminLayout({
 
     return (
         <div className="flex min-h-screen bg-white">
-            <Sidebar />
-            <div className="flex-1 flex flex-col h-screen overflow-hidden">
+            <Sidebar mobileOpen={mobileNavOpen} onClose={() => setMobileNavOpen(false)} />
+            {/* Mobile drawer backdrop */}
+            {mobileNavOpen && (
+                <div className="lg:hidden fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setMobileNavOpen(false)} />
+            )}
+            <div className="flex-1 flex flex-col h-screen overflow-hidden min-w-0">
                 {/* Top Header */}
-                <header className="h-20 flex items-center justify-between px-10 border-b border-purple-50 bg-white/80 backdrop-blur-xl sticky top-0 z-20">
-                    <div className="flex items-center gap-6">
-                        <h1 className="text-xl font-bold font-outfit text-dark uppercase tracking-tight">System Intelligence</h1>
+                <header className="h-20 flex items-center justify-between px-4 lg:px-10 border-b border-purple-50 bg-white/80 backdrop-blur-xl sticky top-0 z-20">
+                    <div className="flex items-center gap-3 lg:gap-6">
+                        <button
+                            onClick={() => setMobileNavOpen(true)}
+                            className="lg:hidden w-10 h-10 rounded-xl bg-purple-50/50 border border-purple-100 flex items-center justify-center text-purple-700 hover:text-primary"
+                            title="Menu"
+                        >
+                            <Menu size={20} />
+                        </button>
+                        <h1 className="text-base lg:text-xl font-bold font-outfit text-dark uppercase tracking-tight">System Intelligence</h1>
                         <div className="hidden md:flex items-center gap-2 px-4 py-2 rounded-xl bg-purple-50/50 border border-purple-100 focus-within:border-primary/40 transition-colors group">
                             <Search size={18} className="text-purple-600 group-focus-within:text-primary transition-colors" />
                             <input
@@ -125,7 +137,7 @@ export default function AdminLayout({
                     </div>
                 </header>
 
-                <main className="flex-1 overflow-y-auto p-10 bg-transparent custom-scrollbar">
+                <main className="flex-1 overflow-y-auto p-6 bg-[#faf8fc] custom-scrollbar">
                     {children}
                 </main>
             </div>

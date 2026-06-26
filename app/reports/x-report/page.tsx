@@ -283,23 +283,24 @@ export default function XReportPage() {
                 __html: `
                 @media print {
                     @page {
-                        margin: 0;
-                        size: 80mm auto;
+                        margin: 14mm;
+                        size: A4;
                     }
                     body * {
                         visibility: hidden;
                     }
-                    #printable-area, #printable-area * {
+                    #report-area, #report-area * {
                         visibility: visible;
                     }
-                    #printable-area {
+                    #report-area {
                         position: absolute;
                         left: 0;
                         top: 0;
-                        width: 80mm;
-                        padding: 10mm 5mm;
-                        color: black;
+                        width: 100%;
+                        overflow: visible !important;
                         background: white;
+                        -webkit-print-color-adjust: exact;
+                        print-color-adjust: exact;
                     }
                     .no-print {
                         display: none !important;
@@ -309,8 +310,8 @@ export default function XReportPage() {
 
             <CashierSidebar className="no-print" />
 
-            <main className="flex-1 overflow-y-auto no-print">
-                <div className="p-8 max-w-6xl mx-auto space-y-8">
+            <main id="report-area" className="flex-1 overflow-y-auto pb-24 lg:pb-0">
+                <div className="p-4 lg:p-8 max-w-6xl mx-auto space-y-6 lg:space-y-8">
                     {/* Header */}
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                         <div>
@@ -323,16 +324,16 @@ export default function XReportPage() {
                                     Updates every 10s
                                 </span>
                             </div>
-                            <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">X-Report</h1>
+                            <h1 className="text-2xl lg:text-3xl font-extrabold text-slate-900 tracking-tight">X-Report</h1>
                             <p className="text-slate-500 text-sm font-medium">
                                 Session #{report?.sessionId} • Started {report?.sessionStart ? new Date(report.sessionStart).toLocaleString() : '...'}
                             </p>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 no-print">
                             <button
                                 onClick={handlePrint}
                                 className="p-3 rounded-xl bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
-                                title="Print Report"
+                                title="Print / Save as PDF"
                             >
                                 <Printer size={20} />
                             </button>
@@ -354,9 +355,9 @@ export default function XReportPage() {
                     )}
 
                     {report && (
-                        <div className="space-y-8">
+                        <div className="space-y-5 lg:space-y-8">
                             {/* Key Stats */}
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 lg:gap-4">
                                 <StatCard
                                     icon={Hash}
                                     label="Total Transactions"
@@ -383,15 +384,15 @@ export default function XReportPage() {
                                 />
                             </div>
 
-                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 lg:gap-8">
                                 {/* Cash Drawer Section */}
-                                <div className="lg:col-span-2 space-y-6">
-                                    <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm">
+                                <div className="lg:col-span-2 space-y-5 lg:space-y-6">
+                                    <div className="bg-white p-5 lg:p-8 rounded-2xl border border-slate-200 shadow-sm">
                                         <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
                                             <div className="w-1 h-6 bg-blue-600 rounded-full" />
                                             Cash Drawer Reconciliation
                                         </h3>
-                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-8">
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5 lg:gap-8">
                                             <div className="space-y-4">
                                                 <div className="flex justify-between items-center pb-3 border-b border-slate-50">
                                                     <span className="text-sm font-medium text-slate-500">Opening Cash</span>
@@ -420,7 +421,7 @@ export default function XReportPage() {
                                             </div>
                                             <div className="bg-slate-900 rounded-2xl p-6 text-white flex flex-col justify-center">
                                                 <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Expected Drawer Amount</p>
-                                                <p className="text-4xl font-black tracking-tight text-blue-400">${report.expectedDrawer.toFixed(2)}</p>
+                                                <p className="text-3xl lg:text-4xl font-black tracking-tight text-blue-400">${report.expectedDrawer.toFixed(2)}</p>
                                                 <p className="text-[9px] text-slate-500 mt-3 italic">Formula: Opening + Cash Sales - Refunds</p>
                                             </div>
                                         </div>
@@ -432,7 +433,8 @@ export default function XReportPage() {
                                             <h3 className="text-lg font-bold text-slate-900">Recent Transactions</h3>
                                             <Receipt size={18} className="text-slate-300" />
                                         </div>
-                                        <div className="overflow-x-auto">
+                                        {/* Desktop table */}
+                                        <div className="overflow-x-auto hidden lg:block">
                                             <table className="w-full text-left">
                                                 <thead className="bg-slate-50 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                                                     <tr>
@@ -476,11 +478,41 @@ export default function XReportPage() {
                                                 </tbody>
                                             </table>
                                         </div>
+
+                                        {/* Mobile card list — no horizontal scroll */}
+                                        <div className="lg:hidden divide-y divide-slate-100">
+                                            {report.recentSales.length === 0 ? (
+                                                <div className="px-5 py-10 text-center text-slate-400 italic text-sm">
+                                                    No transactions recorded in this session yet.
+                                                </div>
+                                            ) : (
+                                                report.recentSales.map((sale) => (
+                                                    <div key={sale.receipt_number} className="flex items-center justify-between gap-3 px-5 py-3">
+                                                        <div className="min-w-0">
+                                                            <p className="text-xs font-bold text-slate-900 truncate">{sale.receipt_number}</p>
+                                                            <p className="text-[10px] text-slate-400 font-medium">
+                                                                {new Date(sale.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                            </p>
+                                                        </div>
+                                                        <div className="flex items-center gap-2 shrink-0">
+                                                            <span className={cn(
+                                                                "px-2 py-0.5 rounded-full text-[9px] font-bold uppercase",
+                                                                sale.payment_method === 'cash' ? "bg-emerald-100 text-emerald-700" :
+                                                                    sale.payment_method === 'card' ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+                                                            )}>
+                                                                {sale.payment_method}
+                                                            </span>
+                                                            <span className="text-sm font-black text-slate-900">${parseFloat(sale.total).toFixed(2)}</span>
+                                                        </div>
+                                                    </div>
+                                                ))
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
 
                                 {/* Category Breakdown */}
-                                <div className="bg-white p-8 rounded-2xl border border-slate-200 shadow-sm h-fit">
+                                <div className="bg-white p-5 lg:p-8 rounded-2xl border border-slate-200 shadow-sm h-fit">
                                     <h3 className="text-lg font-bold text-slate-900 mb-6 flex items-center gap-2">
                                         <Tag size={18} className="text-blue-600" />
                                         Department Sales
@@ -522,7 +554,7 @@ export default function XReportPage() {
 
             {/* Hidden Printable Report */}
             {report && (
-                <div id="printable-area" className="hidden print:block font-mono text-[12px] leading-relaxed">
+                <div id="printable-area" className="hidden no-print font-mono text-[12px] leading-relaxed">
                     <div className="text-center mb-6">
                         <h2 className="text-xl font-bold uppercase tracking-wider">Spirited Wines</h2>
                         <p className="text-[10px] mt-1">X-REPORT (MID-DAY)</p>
@@ -603,13 +635,13 @@ export default function XReportPage() {
 
 function StatCard({ icon: Icon, label, value, color }: StatCardProps) {
     return (
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
-            <div className={cn("w-10 h-10 rounded-xl flex items-center justify-center", color)}>
-                <Icon size={20} />
+        <div className="bg-white p-4 lg:p-6 rounded-2xl border border-slate-200 shadow-sm space-y-2 lg:space-y-3">
+            <div className={cn("w-9 h-9 lg:w-10 lg:h-10 rounded-xl flex items-center justify-center", color)}>
+                <Icon size={18} />
             </div>
             <div>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{label}</p>
-                <p className="text-2xl font-black text-slate-900 tracking-tight">{value}</p>
+                <p className="text-[9px] lg:text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-tight">{label}</p>
+                <p className="text-xl lg:text-2xl font-black text-slate-900 tracking-tight">{value}</p>
             </div>
         </div>
     )

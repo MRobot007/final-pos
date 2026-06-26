@@ -21,8 +21,8 @@ export default {
           glow: 'rgba(75, 36, 74, 0.5)',
         },
         accent: {
-          DEFAULT: '#C41E3A',
-          glow: 'rgba(196, 30, 58, 0.3)',
+          DEFAULT: '#4B244A',
+          glow: 'rgba(75, 36, 74, 0.3)',
         },
       },
     },

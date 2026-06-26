@@ -65,19 +65,25 @@ export function AdminResourceTemplate({
     showBulkDelete = false,
     initialSearch = '',
     customFilter,
-    headerActions
-}: PageProps & { csvPath?: string, showBulkDelete?: boolean, initialSearch?: string, customFilter?: (data: Resource[]) => Resource[], headerActions?: React.ReactNode }) {
+    headerActions,
+    serverPaginated = false,
+    serverParams
+}: PageProps & { csvPath?: string, showBulkDelete?: boolean, initialSearch?: string, customFilter?: (data: Resource[]) => Resource[], headerActions?: React.ReactNode, serverPaginated?: boolean, serverParams?: Record<string, string> }) {
     const [data, setData] = useState<Resource[]>([])
     const [loading, setLoading] = useState(true)
     const [search, setSearch] = useState(initialSearch)
     const [debouncedSearch, setDebouncedSearch] = useState('')
     const [currentPage, setCurrentPage] = useState(1)
     const pageSize = 25
+    const [serverTotal, setServerTotal] = useState(0)
     const [showModal, setShowModal] = useState(false)
     const [isSubmitting, setIsSubmitting] = useState(false)
     const [editingId, setEditingId] = useState<number | null>(null)
     const [formData, setFormData] = useState<Record<string, any>>({})
     const [isCsvUploading, setIsCsvUploading] = useState(false)
+
+    // Stable key so the inline serverParams object doesn't retrigger fetches every render.
+    const serverParamsKey = serverParams ? JSON.stringify(serverParams) : ''
 
     const apiUrl = API_URL
 
@@ -93,22 +99,25 @@ export function AdminResourceTemplate({
         try {
             const cacheKey = `resourceCache:${apiPath}`
             const cacheTimeKey = `resourceCacheTimestamp:${apiPath}`
-            const cached = localStorage.getItem(cacheKey)
-            const cachedAt = localStorage.getItem(cacheTimeKey)
             const now = Date.now()
             const cacheTtl = 5 * 60 * 1000
             let usedCache = false
 
-            if (cached && cachedAt && now - parseInt(cachedAt) < cacheTtl) {
-                try {
-                    const cachedData = JSON.parse(cached)
-                    if (Array.isArray(cachedData)) {
-                        setData(cachedData)
-                        setLoading(false)
-                        usedCache = true
+            // Client cache only in client-paginated mode; server mode varies by page/search.
+            if (!serverPaginated) {
+                const cached = localStorage.getItem(cacheKey)
+                const cachedAt = localStorage.getItem(cacheTimeKey)
+                if (cached && cachedAt && now - parseInt(cachedAt) < cacheTtl) {
+                    try {
+                        const cachedData = JSON.parse(cached)
+                        if (Array.isArray(cachedData)) {
+                            setData(cachedData)
+                            setLoading(false)
+                            usedCache = true
+                        }
+                    } catch (e) {
+                        usedCache = false
                     }
-                } catch (e) {
-                    usedCache = false
                 }
             }
 
@@ -119,7 +128,21 @@ export function AdminResourceTemplate({
             const token = localStorage.getItem('token')
             if (!token) return
 
-            const res = await fetch(`${apiUrl}${apiPath}`, {
+            let url = `${apiUrl}${apiPath}`
+            if (serverPaginated) {
+                const params = new URLSearchParams()
+                params.set('page', String(currentPage))
+                params.set('limit', String(pageSize))
+                const q = debouncedSearch.trim()
+                if (q) params.set('q', q)
+                if (serverParamsKey) {
+                    const extra = JSON.parse(serverParamsKey) as Record<string, string>
+                    Object.entries(extra).forEach(([k, v]) => params.set(k, v))
+                }
+                url += `?${params.toString()}`
+            }
+
+            const res = await fetch(url, {
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -158,19 +181,24 @@ export function AdminResourceTemplate({
                 }
             }
             setData(nextData)
+            if (serverPaginated && result && typeof result.total === 'number') {
+                setServerTotal(result.total)
+            }
             setLoading(false)
-            try {
-                localStorage.setItem(cacheKey, JSON.stringify(nextData))
-                localStorage.setItem(cacheTimeKey, now.toString())
-            } catch (e) {
-                console.warn(`LocalStorage quota exceeded for ${resourceName}, skipping cache.`)
+            if (!serverPaginated) {
+                try {
+                    localStorage.setItem(cacheKey, JSON.stringify(nextData))
+                    localStorage.setItem(cacheTimeKey, now.toString())
+                } catch (e) {
+                    console.warn(`LocalStorage quota exceeded for ${resourceName}, skipping cache.`)
+                }
             }
         } catch (err) {
             console.error(err)
             setData([])
             setLoading(false)
         }
-    }, [apiUrl, apiPath, resourceName])
+    }, [apiUrl, apiPath, resourceName, serverPaginated, currentPage, debouncedSearch, serverParamsKey])
 
     useEffect(() => {
         fetchData()
@@ -323,6 +351,9 @@ export function AdminResourceTemplate({
 
     const deferredSearch = useDeferredValue(debouncedSearch)
     const filteredData = useMemo(() => {
+        // In server mode the API already filtered, searched, and paged this set.
+        if (serverPaginated) return data
+
         let result = data
 
         if (customFilter) {
@@ -336,13 +367,16 @@ export function AdminResourceTemplate({
                 String(val).toLowerCase().includes(query)
             )
         )
-    }, [data, deferredSearch, customFilter])
-    const totalPages = Math.max(1, Math.ceil(filteredData.length / pageSize))
+    }, [data, deferredSearch, customFilter, serverPaginated])
+
+    const effectiveTotal = serverPaginated ? serverTotal : filteredData.length
+    const totalPages = Math.max(1, Math.ceil(effectiveTotal / pageSize))
     const safePage = Math.min(currentPage, totalPages)
     const pagedData = useMemo(() => {
+        if (serverPaginated) return filteredData
         const start = (safePage - 1) * pageSize
         return filteredData.slice(start, start + pageSize)
-    }, [filteredData, safePage])
+    }, [filteredData, safePage, serverPaginated])
 
     useEffect(() => {
         if (currentPage !== safePage) {
@@ -352,14 +386,14 @@ export function AdminResourceTemplate({
 
     useEffect(() => {
         setCurrentPage(1)
-    }, [apiPath, deferredSearch])
+    }, [apiPath, debouncedSearch, serverParamsKey])
 
     return (
-        <div className="space-y-8 pb-12">
+        <div className="space-y-6 pb-8">
             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-6">
                 <div>
-                    <h2 className="text-3xl font-black text-dark font-outfit uppercase tracking-tight">{title}</h2>
-                    <p className="text-purple-800 mt-1 italic text-sm font-semibold">{description}</p>
+                    <h2 className="text-2xl font-black text-black font-outfit uppercase tracking-tight">{title}</h2>
+                    <p className="text-purple-500 mt-1 text-sm font-semibold">{description}</p>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                     <div className="relative group mr-2">
@@ -413,27 +447,27 @@ export function AdminResourceTemplate({
                 </div>
             </div>
 
-            <div className="glass-card rounded-[40px] overflow-hidden border-purple-50 shadow-xl bg-white/80">
-                <div className="overflow-x-auto">
+            <div className="bg-white rounded-2xl overflow-hidden border border-purple-100 shadow-sm">
+                <div className="overflow-x-auto hidden lg:block">
                     <table className="w-full text-left">
                         <thead>
                             <tr className="border-b border-purple-100 bg-purple-50/50">
                                 {columns.map((col, i) => (
                                     <th key={i} className={cn(
-                                        "px-8 py-6 text-[10px] font-black text-purple-700 uppercase tracking-[0.2em]",
+                                        "px-6 py-4 text-[10px] font-black text-purple-700 uppercase tracking-[0.2em]",
                                         col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''
                                     )}>
                                         {col.label}
                                     </th>
                                 ))}
-                                <th className="px-8 py-6 text-[10px] font-black text-purple-700 uppercase tracking-[0.2em] text-right">Actions</th>
+                                <th className="px-6 py-4 text-[10px] font-black text-purple-700 uppercase tracking-[0.2em] text-right">Actions</th>
                             </tr>
                         </thead>
                         <tbody className="divide-y divide-purple-50">
                             {loading ? (
                                 [...Array(5)].map((_, i) => (
                                     <tr key={i} className="animate-pulse">
-                                        <td colSpan={columns.length + 1} className="px-8 py-6 h-20 bg-purple-50/30" />
+                                        <td colSpan={columns.length + 1} className="px-6 py-4 h-20 bg-purple-50/30" />
                                     </tr>
                                 ))
                             ) : filteredData.length === 0 ? (
@@ -450,17 +484,17 @@ export function AdminResourceTemplate({
                                             const displayVal = typeof val === 'object' ? JSON.stringify(val) : val
                                             return (
                                                 <td key={i} className={cn(
-                                                    "px-8 py-6",
+                                                    "px-6 py-4",
                                                     col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : ''
                                                 )}>
                                                     {col.render ? (
                                                         col.render(val, item)
                                                     ) : i === 0 ? (
-                                                        <div className="flex items-center gap-4">
-                                                            <div className="w-10 h-10 rounded-xl bg-purple-50/50 border border-purple-100 flex items-center justify-center text-primary group-hover:scale-110 transition-transform">
-                                                                <Icon size={18} />
+                                                        <div className="flex items-center gap-3">
+                                                            <div className="w-9 h-9 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center text-primary">
+                                                                <Icon size={16} />
                                                             </div>
-                                                            <span className="text-primary font-black text-sm tracking-tight uppercase">{displayVal ?? 'N/A'}</span>
+                                                            <span className="text-black font-black text-sm tracking-tight uppercase">{displayVal ?? 'N/A'}</span>
                                                         </div>
                                                     ) : (
                                                         <span className="text-sm font-bold text-purple-900">{displayVal ?? '-'}</span>
@@ -468,7 +502,7 @@ export function AdminResourceTemplate({
                                                 </td>
                                             )
                                         })}
-                                        <td className="px-8 py-6 text-right">
+                                        <td className="px-6 py-4 text-right">
                                             <div className="flex items-center justify-end gap-2">
                                                 {renderActions && renderActions(item)}
                                                 <button
@@ -491,10 +525,63 @@ export function AdminResourceTemplate({
                         </tbody>
                     </table>
                 </div>
-                {!loading && filteredData.length > 0 && (
-                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-8 py-4 border-t border-purple-100 bg-white/70">
+
+                {/* Mobile card list (replaces the wide table on small screens — no horizontal scroll) */}
+                <div className="lg:hidden p-3 space-y-2">
+                    {loading ? (
+                        [...Array(5)].map((_, i) => <div key={i} className="h-20 bg-purple-50/40 rounded-xl animate-pulse" />)
+                    ) : filteredData.length === 0 ? (
+                        <div className="py-12 text-center text-purple-600 font-bold uppercase tracking-[0.3em] text-[10px] opacity-60">No Records Found</div>
+                    ) : (
+                        pagedData.map((item) => {
+                            const first = columns[0]
+                            const firstVal = first ? first.key.split('.').reduce((obj, key) => obj?.[key], item) : undefined
+                            const firstDisplay = typeof firstVal === 'object' ? JSON.stringify(firstVal) : firstVal
+                            return (
+                                <div key={item.id} className="bg-white border border-purple-100 rounded-xl p-3">
+                                    <div className="flex items-center justify-between gap-2 mb-2">
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <div className="w-8 h-8 rounded-lg bg-purple-50 border border-purple-100 flex items-center justify-center text-primary shrink-0">
+                                                <Icon size={15} />
+                                            </div>
+                                            <span className="font-black text-sm text-black uppercase tracking-tight truncate">
+                                                {first?.render ? first.render(firstVal, item) : (firstDisplay ?? 'N/A')}
+                                            </span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            {renderActions && renderActions(item)}
+                                            <button onClick={() => handleEdit(item)} className="w-8 h-8 rounded-lg bg-purple-50/50 border border-purple-100 flex items-center justify-center text-purple-800 hover:text-primary transition-all">
+                                                <Edit size={13} />
+                                            </button>
+                                            <button onClick={() => handleDelete(item.id)} className="w-8 h-8 rounded-lg bg-purple-50/50 border border-purple-100 flex items-center justify-center text-purple-800 hover:text-red-500 transition-all">
+                                                <Trash2 size={13} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                    {columns.length > 1 && (
+                                        <div className="grid grid-cols-2 gap-x-3 gap-y-1 pl-10">
+                                            {columns.slice(1).map((col, i) => {
+                                                const v = col.key.split('.').reduce((obj, key) => obj?.[key], item)
+                                                const dv = typeof v === 'object' ? JSON.stringify(v) : v
+                                                return (
+                                                    <div key={i} className="flex items-center justify-between gap-2 text-[11px] min-w-0">
+                                                        <span className="text-purple-400 font-bold uppercase tracking-tight truncate">{col.label}</span>
+                                                        <span className="text-black font-bold truncate">{col.render ? col.render(v, item) : (dv ?? '-')}</span>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+                            )
+                        })
+                    )}
+                </div>
+
+                {!loading && pagedData.length > 0 && (
+                    <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-6 py-4 border-t border-purple-100 bg-purple-50/30">
                         <div className="text-[10px] font-black uppercase tracking-widest text-purple-600">
-                            Showing {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filteredData.length)} of {filteredData.length}
+                            Showing {(safePage - 1) * pageSize + 1}–{(safePage - 1) * pageSize + pagedData.length} of {effectiveTotal}
                         </div>
                         <div className="flex items-center gap-2">
                             <button
@@ -527,15 +614,14 @@ export function AdminResourceTemplate({
 
             {/* Dynamic Form Modal */}
             {showModal && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 backdrop-blur-md bg-black/20">
-                    <div className="glass-card rounded-[40px] p-10 w-full max-w-lg relative overflow-hidden border-purple-100 bg-white shadow-2xl">
-                        <div className="absolute top-[-10%] right-[-10%] w-64 h-64 bg-primary/5 rounded-full blur-[80px]" />
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 backdrop-blur-md bg-primary/20">
+                    <div className="rounded-2xl p-8 w-full max-w-lg border border-purple-100 bg-white shadow-2xl">
                         <div className="flex justify-between items-start mb-6">
                             <div>
-                                <h3 className="text-2xl font-black text-dark mb-2 font-outfit tracking-tight uppercase">
+                                <h3 className="text-xl font-black text-black mb-1 font-outfit tracking-tight uppercase">
                                     {editingId ? 'Edit Record' : `New ${resourceName.slice(0, -1)}`}
                                 </h3>
-                                <p className="text-purple-800 italic text-sm">Fill in the details for the operational ledger.</p>
+                                <p className="text-purple-500 text-sm">Fill in the details below.</p>
                             </div>
                             <button
                                 type="button"

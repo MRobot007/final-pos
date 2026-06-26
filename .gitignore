@@ -5,7 +5,11 @@ dist/
 build/
 .env
 .env.*
+!.env.example
 npm-debug.log*
 yarn-error.log
 package-lock.json
 *.tsbuildinfo
+
+# Database dumps — contain real business/customer data, never commit
+*_dump.sql

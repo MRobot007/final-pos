@@ -3,10 +3,22 @@ ini_set('display_errors', 0);
 ini_set('display_startup_errors', 0);
 error_reporting(E_ALL);
 header('Content-Type: application/json');
-if (isset($_SERVER['HTTP_ORIGIN'])) {
-    header('Access-Control-Allow-Origin: ' . $_SERVER['HTTP_ORIGIN']);
+
+// CORS: ALLOWED_ORIGINS is a comma-separated allowlist set in production.
+// Default "*" reflects the request origin (local dev / same-origin deploys).
+$allowedOrigins = getenv('ALLOWED_ORIGINS') ?: '*';
+$requestOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+if ($allowedOrigins === '*') {
+    header('Access-Control-Allow-Origin: ' . ($requestOrigin !== '' ? $requestOrigin : '*'));
+    if ($requestOrigin !== '') {
+        header('Vary: Origin');
+    }
 } else {
-    header('Access-Control-Allow-Origin: *');
+    $originList = array_map('trim', explode(',', $allowedOrigins));
+    if ($requestOrigin !== '' && in_array($requestOrigin, $originList, true)) {
+        header('Access-Control-Allow-Origin: ' . $requestOrigin);
+        header('Vary: Origin');
+    }
 }
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -20,7 +32,13 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 
 $pdo = get_db();
-ensure_table_defaults($pdo);
+// Run schema bootstrap at most once per hour instead of on every request.
+// The DDL + bcrypt seeding is expensive; a temp marker file gates it.
+$schemaFlag = sys_get_temp_dir() . '/pos_schema_ok';
+if (!is_file($schemaFlag) || (time() - filemtime($schemaFlag) > 3600)) {
+    ensure_table_defaults($pdo);
+    @touch($schemaFlag);
+}
 
 $method = $_SERVER['REQUEST_METHOD'];
 $rawPath = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '/';
@@ -41,14 +59,8 @@ $path = '/' . ltrim(preg_replace('#/+#', '/', $path), '/');
 
 // ROUTES
 if ($method === 'GET' && $path === '/api/health') {
-    $stats = [
-        'status' => 'ok',
-        'php_version' => PHP_VERSION,
-        'memory_limit' => ini_get('memory_limit'),
-        'products_count' => (int)$pdo->query('SELECT COUNT(*) FROM products')->fetchColumn(),
-        'categories_count' => (int)$pdo->query('SELECT COUNT(*) FROM categories')->fetchColumn(),
-    ];
-    respond($stats);
+    // Lightweight: no COUNT queries, no server-version disclosure.
+    respond(['status' => 'ok']);
 }
 
 function json_input(): array {
@@ -185,6 +197,8 @@ function ensure_table_defaults(PDO $pdo): void {
 
         ensure_column($pdo, 'products', 'bottle_size', "VARCHAR(50) DEFAULT '750ml'");
         ensure_column($pdo, 'products', 'cost_price', 'DECIMAL(10,2) DEFAULT 0');
+        // Each product can belong to a supplier (used for the supplier purchase-order feature).
+        ensure_column($pdo, 'products', 'supplier_id', 'INT NULL');
 
     $pdo->exec('CREATE TABLE IF NOT EXISTS registers (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -645,9 +659,50 @@ if ($method === 'DELETE' && preg_match('#^/api/(admin/)?categories/(\d+)$#', $pa
     respond(['ok' => true]);
 }
 
-// Products
+// Products (paginated, searchable, auth-guarded)
 if ($method === 'GET' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
-    $rows = $pdo->query('SELECT p.*, c.id AS cat_id, c.name AS cat_name FROM products p LEFT JOIN categories c ON p.category_id = c.id ORDER BY p.id DESC')->fetchAll();
+    require_auth(['OWNER', 'MANAGER', 'CASHIER']);
+
+    // limit/offset are validated ints, interpolated directly (PDO emulated
+    // prepares quote bound params as strings, which breaks LIMIT/OFFSET).
+    $limit  = isset($_GET['limit']) ? max(1, min(500, (int)$_GET['limit'])) : 100;
+    $page   = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $offset = ($page - 1) * $limit;
+    $q      = trim((string)($_GET['q'] ?? ''));
+    $catId  = (isset($_GET['category_id']) && $_GET['category_id'] !== '') ? (int)$_GET['category_id'] : null;
+
+    $where = [];
+    $params = [];
+    if ($q !== '') {
+        $where[] = '(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)';
+        $like = '%' . $q . '%';
+        $params[] = $like; $params[] = $like; $params[] = $like;
+    }
+    if ($catId !== null) {
+        $where[] = 'p.category_id = ?';
+        $params[] = $catId;
+    }
+    if (isset($_GET['low_stock']) && $_GET['low_stock'] === '1') {
+        $where[] = 'p.stock <= COALESCE(p.low_stock_threshold, 10)';
+    }
+    $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM products p $whereSql");
+    $countStmt->execute($params);
+    $total = (int)$countStmt->fetchColumn();
+
+    $stmt = $pdo->prepare(
+        "SELECT p.id, p.name, p.sku, p.barcode, p.brand, p.is_alcohol, p.mrp,
+                p.bottle_size, p.price, p.stock, p.low_stock_threshold, p.supplier_id,
+                p.category_id, c.id AS cat_id, c.name AS cat_name
+         FROM products p
+         LEFT JOIN categories c ON p.category_id = c.id
+         $whereSql
+         ORDER BY p.id DESC
+         LIMIT $limit OFFSET $offset"
+    );
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll();
     $out = array_map(function($r) {
         return [
             'id' => (int)$r['id'],
@@ -663,9 +718,10 @@ if ($method === 'GET' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
             'lowStockThreshold' => (int)($r['low_stock_threshold'] ?? 10),
             'category' => ['id' => (int)$r['cat_id'], 'name' => $r['cat_name'] ?? 'Unassigned'],
             'categoryId' => (int)$r['cat_id'],
+            'supplierId' => $r['supplier_id'] !== null ? (int)$r['supplier_id'] : null,
         ];
     }, $rows);
-    respond($out);
+    respond(['data' => $out, 'total' => $total, 'page' => $page, 'limit' => $limit]);
 }
 
 if ($method === 'GET' && preg_match('#^/api/products/barcode/(.+)$#', $path, $m)) {
@@ -694,10 +750,35 @@ if ($method === 'GET' && preg_match('#^/api/products/barcode/(.+)$#', $path, $m)
 
 if ($method === 'GET' && $path === '/api/pos/products/search') {
     require_auth(['OWNER', 'MANAGER', 'CASHIER']);
-    $q = $_GET['q'] ?? '';
-    $stmt = $pdo->prepare('SELECT p.*, c.id AS cat_id, c.name AS cat_name FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ? ORDER BY p.id DESC LIMIT 20');
-    $like = '%' . $q . '%';
-    $stmt->execute([$like, $like, $like]);
+    $q     = trim((string)($_GET['q'] ?? ''));
+    $limit = isset($_GET['limit']) ? max(1, min(200, (int)$_GET['limit'])) : 100;
+    $catId = (isset($_GET['category_id']) && $_GET['category_id'] !== '') ? (int)$_GET['category_id'] : null;
+
+    $where = [];
+    $params = [];
+    if ($q !== '') {
+        $where[] = '(p.name LIKE ? OR p.sku LIKE ? OR p.barcode LIKE ?)';
+        $like = '%' . $q . '%';
+        $params[] = $like; $params[] = $like; $params[] = $like;
+    }
+    if ($catId !== null) {
+        $where[] = 'p.category_id = ?';
+        $params[] = $catId;
+    }
+    $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
+
+    // $limit is a validated int interpolated directly (see products route note).
+    $stmt = $pdo->prepare(
+        "SELECT p.id, p.name, p.sku, p.barcode, p.brand, p.is_alcohol, p.mrp,
+                p.bottle_size, p.price, p.stock, p.low_stock_threshold,
+                c.id AS cat_id, c.name AS cat_name
+         FROM products p
+         LEFT JOIN categories c ON p.category_id = c.id
+         $whereSql
+         ORDER BY p.name ASC
+         LIMIT $limit"
+    );
+    $stmt->execute($params);
     $rows = $stmt->fetchAll();
     $out = array_map(fn($r) => [
         'id' => (int)$r['id'],
@@ -722,9 +803,11 @@ if ($method === 'POST' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
     
     $name = $data['name'] ?? '';
     $catId = $data['categoryId'] ?? $data['category_id'] ?? $data['cat_id'] ?? null;
+    $supplierId = $data['supplierId'] ?? $data['supplier_id'] ?? null;
+    $supplierId = ($supplierId === '' || $supplierId === null) ? null : (int)$supplierId;
     $isAlcohol = !empty($data['isAlcohol']) ? 1 : (is_alcoholic($name, $pdo, $catId) ? 1 : 0);
 
-    $stmt = $pdo->prepare('INSERT INTO products (name, sku, barcode, category_id, price, stock, brand, is_alcohol, mrp, bottle_size, low_stock_threshold) VALUES (?,?,?,?,?,?,?,?,?,?,?)');
+    $stmt = $pdo->prepare('INSERT INTO products (name, sku, barcode, category_id, price, stock, brand, is_alcohol, mrp, bottle_size, low_stock_threshold, supplier_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)');
     $stmt->execute([
         $name,
         $data['sku'] ?? '',
@@ -737,6 +820,7 @@ if ($method === 'POST' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
         $data['mrp'] ?? null,
         $data['bottleSize'] ?? null,
         (int)($data['lowStockThreshold'] ?? 10),
+        $supplierId,
     ]);
     respond(['ok' => true]);
 }
@@ -748,9 +832,11 @@ if ($method === 'PUT' && preg_match('#^/api/(admin/)?products/(\d+)$#', $path, $
     
     $name = $data['name'] ?? '';
     $catId = $data['categoryId'] ?? $data['category_id'] ?? $data['cat_id'] ?? null;
+    $supplierId = $data['supplierId'] ?? $data['supplier_id'] ?? null;
+    $supplierId = ($supplierId === '' || $supplierId === null) ? null : (int)$supplierId;
     $isAlcohol = !empty($data['isAlcohol']) ? 1 : (is_alcoholic($name, $pdo, $catId) ? 1 : 0);
 
-    $stmt = $pdo->prepare('UPDATE products SET name=?, sku=?, barcode=?, category_id=?, price=?, stock=?, brand=?, is_alcohol=?, mrp=?, bottle_size=?, low_stock_threshold=? WHERE id=?');
+    $stmt = $pdo->prepare('UPDATE products SET name=?, sku=?, barcode=?, category_id=?, price=?, stock=?, brand=?, is_alcohol=?, mrp=?, bottle_size=?, low_stock_threshold=?, supplier_id=? WHERE id=?');
     $stmt->execute([
         $name,
         $data['sku'] ?? '',
@@ -763,6 +849,7 @@ if ($method === 'PUT' && preg_match('#^/api/(admin/)?products/(\d+)$#', $path, $
         $data['mrp'] ?? null,
         $data['bottleSize'] ?? null,
         (int)($data['lowStockThreshold'] ?? 10),
+        $supplierId,
         $id,
     ]);
     respond(['ok' => true]);
@@ -1060,16 +1147,36 @@ if ($method === 'POST' && preg_match('#^/api/(pos/)?register/open/?$#', $path)) 
     $me = require_auth(['OWNER', 'MANAGER', 'CASHIER']);
     $data = json_input();
     $opening = (float)($data['openingCash'] ?? 0);
-    // close any open register
-    $pdo->exec('UPDATE registers SET status="CLOSED", closed_at = NOW() WHERE status="OPEN"');
-    $stmt = $pdo->prepare('INSERT INTO registers (opening_cash, current_cash, status) VALUES (?,?,"OPEN")');
-    $stmt->execute([$opening, $opening]);
-    $id = $pdo->lastInsertId();
+    $pdo->beginTransaction();
+    try {
+        // Close any currently open register AND its lingering sessions so none
+        // are left OPEN against a closed register.
+        $pdo->exec('UPDATE registers SET status="CLOSED", closed_at = NOW() WHERE status="OPEN"');
+        $pdo->exec('UPDATE sessions SET status="CLOSED" WHERE status="OPEN"');
+
+        // Open the new register; current_cash carries the opening float exactly once.
+        $stmt = $pdo->prepare('INSERT INTO registers (opening_cash, current_cash, status, opened_at) VALUES (?,?,"OPEN",NOW())');
+        $stmt->execute([$opening, $opening]);
+        $id = (int)$pdo->lastInsertId();
+
+        // Immediately open a session for this user so the first sale works without
+        // a page reload. Leave opening_cash NULL when 0 so it can still be set later
+        // via the opening-cash route (which avoids double-counting the float).
+        $sess = $pdo->prepare('INSERT INTO sessions (cashier_id, register_id, status, opening_cash) VALUES (?,?,"OPEN",?)');
+        $sess->execute([(int)$me['id'], $id, $opening > 0 ? $opening : null]);
+        $sessionId = (int)$pdo->lastInsertId();
+
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        respond(['error' => $e->getMessage()], 400);
+    }
     respond([
-        'id' => (int)$id,
+        'id' => $id,
         'openingCash' => number_format($opening, 2, '.', ''),
         'currentCash' => $opening,
         'status' => 'OPEN',
+        'sessionId' => $sessionId,
     ]);
 }
 
@@ -1271,7 +1378,7 @@ if ($method === 'POST' && ($path === '/api/sales' || $path === '/api/pos/sales')
             }
         }
 
-        if (!in_array($primaryPaymentMethod, ['cash', 'card', 'split'], true)) {
+        if (!in_array($primaryPaymentMethod, ['cash', 'card', 'split', 'upi', 'wallet'], true)) {
             $primaryPaymentMethod = 'split';
         }
 
@@ -1709,23 +1816,26 @@ if ($method === 'GET' && $path === '/api/register/z-report') {
 // Register Management
 if ($method === 'GET' && $path === '/api/pos/session/current') {
     $me = require_auth(['OWNER', 'MANAGER', 'CASHIER']);
-    $stmt = $pdo->prepare('SELECT * FROM sessions WHERE status="OPEN" AND cashier_id = ? ORDER BY id DESC LIMIT 1');
-    $stmt->execute([$me['id']]);
+    // Always work against the currently OPEN register so stale sessions left open
+    // on a closed register are never handed back to the POS.
+    $reg = $pdo->query('SELECT id FROM registers WHERE status="OPEN" ORDER BY id DESC LIMIT 1')->fetch();
+    if (!$reg) respond(['error' => 'No active session'], 404);
+    $regId = (int)$reg['id'];
+
+    $stmt = $pdo->prepare('SELECT * FROM sessions WHERE status="OPEN" AND cashier_id = ? AND register_id = ? ORDER BY id DESC LIMIT 1');
+    $stmt->execute([$me['id'], $regId]);
     $session = $stmt->fetch();
-    
+
     if (!$session) {
-        // Auto-create session if none exists but a register is open
-        $reg = $pdo->query('SELECT id FROM registers WHERE status="OPEN" ORDER BY id DESC LIMIT 1')->fetch();
-        if ($reg) {
-            $stmt = $pdo->prepare('INSERT INTO sessions (cashier_id, register_id, status) VALUES (?, ?, "OPEN")');
-            $stmt->execute([$me['id'], $reg['id']]);
-            $sessionId = $pdo->lastInsertId();
-            $stmt = $pdo->prepare('SELECT * FROM sessions WHERE id = ?');
-            $stmt->execute([$sessionId]);
-            $session = $stmt->fetch();
-        }
+        // No session yet on the open register: create one for this cashier.
+        $stmt = $pdo->prepare('INSERT INTO sessions (cashier_id, register_id, status) VALUES (?, ?, "OPEN")');
+        $stmt->execute([$me['id'], $regId]);
+        $sessionId = $pdo->lastInsertId();
+        $stmt = $pdo->prepare('SELECT * FROM sessions WHERE id = ?');
+        $stmt->execute([$sessionId]);
+        $session = $stmt->fetch();
     }
-    
+
     if (!$session) respond(['error' => 'No active session'], 404);
     respond($session);
 }
@@ -1817,44 +1927,60 @@ if ($method === 'GET' && $path === '/api/register/current') {
     ]);
 }
 
-if ($method === 'POST' && $path === '/api/register/open') {
-    $me = require_auth(['OWNER', 'MANAGER', 'CASHIER']);
-    $data = json_input();
-    // Support both parameter names for compatibility
-    $opening = (float)($data['openingCash'] ?? $data['openingFloat'] ?? 0);
-    
-    // Close any previous open registers just in case
-    $pdo->exec('UPDATE registers SET status="CLOSED", closed_at=NOW() WHERE status="OPEN"');
-    
-    $stmt = $pdo->prepare('INSERT INTO registers (opening_cash, current_cash, status, opened_at) VALUES (?, ?, "OPEN", NOW())');
-    $stmt->execute([$opening, $opening]);
-    $id = $pdo->lastInsertId();
-    
-    log_action($pdo, (int)$me['id'], 'register.opened', ['registerId' => $id, 'openingCash' => $opening]);
-    respond([
-        'id' => (int)$id,
-        'openingCash' => $opening,
-        'currentCash' => $opening,
-        'status' => 'OPEN',
-        'ok' => true
-    ]);
-}
-
 if ($method === 'POST' && $path === '/api/register/update-opening-cash') {
     $me = require_auth(['OWNER', 'MANAGER', 'CASHIER']);
     $data = json_input();
     $opening = (float)($data['openingCash'] ?? 0);
-    
+    if ($opening < 0) respond(['error' => 'Invalid opening cash amount'], 400);
+
     $reg = $pdo->query('SELECT * FROM registers WHERE status="OPEN" ORDER BY id DESC LIMIT 1')->fetch();
     if (!$reg) respond(['error' => 'No open register found'], 404);
-    
-    // Allow updating opening cash even if already set, to allow corrections.
-    // The "read-only" rule can be enforced via UI, but backend should allow it for flexibility.
-    $pdo->prepare('UPDATE registers SET opening_cash = ?, current_cash = current_cash + (? - opening_cash) WHERE id = ?')
-        ->execute([$opening, $opening, $reg['id']]);
-    
-    log_action($pdo, (int)$me['id'], 'register.opening_cash_set', ['registerId' => $reg['id'], 'openingCash' => $opening]);
-    respond(['id' => $reg['id'], 'openingCash' => $opening, 'ok' => true]);
+    $regId = (int)$reg['id'];
+
+    // Anchor on THIS cashier's session for the open register — the same session the
+    // POS holds and the X-report queries — so the change is reflected everywhere.
+    $sessStmt = $pdo->prepare('SELECT * FROM sessions WHERE status="OPEN" AND cashier_id = ? AND register_id = ? ORDER BY id DESC LIMIT 1');
+    $sessStmt->execute([(int)$me['id'], $regId]);
+    $session = $sessStmt->fetch();
+
+    // Old value comes from the session when present, else the register, so the
+    // drawer delta is correct regardless of how the float was first recorded.
+    $oldOpening = ($session && is_numeric($session['opening_cash'])) ? (float)$session['opening_cash']
+        : (is_numeric($reg['opening_cash']) ? (float)$reg['opening_cash'] : 0.0);
+    $delta = round($opening - $oldOpening, 2);
+
+    $pdo->beginTransaction();
+    try {
+        // Pre-computed $delta avoids the MariaDB left-to-right SET evaluation pitfall.
+        $pdo->prepare('UPDATE registers SET opening_cash = ?, current_cash = current_cash + ? WHERE id = ?')
+            ->execute([$opening, $delta, $regId]);
+        if ($session) {
+            $pdo->prepare('UPDATE sessions SET opening_cash = ? WHERE id = ?')
+                ->execute([$opening, (int)$session['id']]);
+        } else {
+            // Keep all open sessions on this register in sync if none was found for the user.
+            $pdo->prepare('UPDATE sessions SET opening_cash = ? WHERE status="OPEN" AND register_id = ?')
+                ->execute([$opening, $regId]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        respond(['error' => $e->getMessage()], 400);
+    }
+
+    $curStmt = $pdo->prepare('SELECT current_cash FROM registers WHERE id = ?');
+    $curStmt->execute([$regId]);
+    $currentCash = (float)$curStmt->fetchColumn();
+
+    log_action($pdo, (int)$me['id'], 'register.opening_cash_set', ['registerId' => $regId, 'sessionId' => $session ? (int)$session['id'] : null, 'openingCash' => $opening]);
+    respond([
+        'id' => $regId,
+        'registerId' => $regId,
+        'sessionId' => $session ? (int)$session['id'] : null,
+        'openingCash' => $opening,
+        'currentCash' => $currentCash,
+        'ok' => true,
+    ]);
 }
 
 if ($method === 'POST' && $path === '/api/register/close') {
@@ -1924,6 +2050,99 @@ if ($method === 'GET' && preg_match('#^/api/(admin/)?stats/?$#', $path)) {
     ]);
 }
 
+// Sales chart data for the dashboard, by period: today | weekly | monthly | overall.
+if ($method === 'GET' && preg_match('#^/api/(admin/)?sales-chart/?$#', $path)) {
+    require_auth(['OWNER', 'MANAGER']);
+    $period = strtolower($_GET['period'] ?? 'weekly');
+    $chart = [];
+
+    if ($period === 'today') {
+        // Hourly buckets across business hours (8am–10pm).
+        $rows = $pdo->query("SELECT HOUR(created_at) k, SUM(total) v FROM sales WHERE DATE(created_at)=CURDATE() GROUP BY HOUR(created_at)")->fetchAll();
+        $map = [];
+        foreach ($rows as $r) $map[(int)$r['k']] = (float)$r['v'];
+        for ($h = 8; $h <= 22; $h++) {
+            $chart[] = ['label' => date('ga', mktime($h, 0, 0, 1, 1, 2000)), 'value' => round($map[$h] ?? 0, 2)];
+        }
+    } elseif ($period === 'monthly') {
+        // Last 30 days, by day.
+        $rows = $pdo->query("SELECT DATE(created_at) k, SUM(total) v FROM sales WHERE created_at >= (CURDATE() - INTERVAL 29 DAY) GROUP BY DATE(created_at)")->fetchAll();
+        $map = [];
+        foreach ($rows as $r) $map[$r['k']] = (float)$r['v'];
+        for ($i = 29; $i >= 0; $i--) {
+            $d = date('Y-m-d', strtotime("-$i days"));
+            $chart[] = ['label' => date('j', strtotime($d)), 'value' => round($map[$d] ?? 0, 2)];
+        }
+    } elseif ($period === 'overall') {
+        // All time, by month.
+        $rows = $pdo->query("SELECT DATE_FORMAT(created_at,'%Y-%m') k, SUM(total) v FROM sales GROUP BY k ORDER BY k")->fetchAll();
+        foreach ($rows as $r) {
+            $chart[] = ['label' => date('M y', strtotime($r['k'] . '-01')), 'value' => round((float)$r['v'], 2)];
+        }
+    } else {
+        // weekly (default): last 7 days, by day.
+        $period = 'weekly';
+        $rows = $pdo->query("SELECT DATE(created_at) k, SUM(total) v FROM sales WHERE created_at >= (CURDATE() - INTERVAL 6 DAY) GROUP BY DATE(created_at)")->fetchAll();
+        $map = [];
+        foreach ($rows as $r) $map[$r['k']] = (float)$r['v'];
+        for ($i = 6; $i >= 0; $i--) {
+            $d = date('Y-m-d', strtotime("-$i days"));
+            $chart[] = ['label' => date('D', strtotime($d)), 'value' => round($map[$d] ?? 0, 2)];
+        }
+    }
+
+    respond(['period' => $period, 'chartData' => $chart]);
+}
+
+// Sales report for a date range, with a per-day breakdown + detailed list (Export Report).
+if ($method === 'GET' && preg_match('#^/api/(admin/)?reports/sales/?$#', $path)) {
+    require_auth(['OWNER', 'MANAGER']);
+    $from = (string)($_GET['from'] ?? date('Y-m-d'));
+    $to = (string)($_GET['to'] ?? date('Y-m-d'));
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) $from = date('Y-m-d');
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) $to = date('Y-m-d');
+    if ($from > $to) { $t = $from; $from = $to; $to = $t; }
+
+    $perDayStmt = $pdo->prepare(
+        "SELECT DATE(created_at) d, COUNT(*) orders, COALESCE(SUM(total),0) revenue,
+                COALESCE(SUM(cash_amount),0) cash, COALESCE(SUM(card_amount),0) card
+         FROM sales WHERE DATE(created_at) BETWEEN ? AND ?
+         GROUP BY DATE(created_at) ORDER BY d ASC"
+    );
+    $perDayStmt->execute([$from, $to]);
+    $perDay = array_map(fn($r) => [
+        'date' => $r['d'],
+        'orders' => (int)$r['orders'],
+        'revenue' => round((float)$r['revenue'], 2),
+        'cash' => round((float)$r['cash'], 2),
+        'card' => round((float)$r['card'], 2),
+    ], $perDayStmt->fetchAll());
+
+    $salesStmt = $pdo->prepare(
+        "SELECT id, receipt_number, created_at, payment_method, total, cash_amount, card_amount
+         FROM sales WHERE DATE(created_at) BETWEEN ? AND ? ORDER BY created_at ASC, id ASC"
+    );
+    $salesStmt->execute([$from, $to]);
+    $sales = array_map(fn($r) => [
+        'id' => (int)$r['id'],
+        'receiptNumber' => $r['receipt_number'],
+        'createdAt' => $r['created_at'],
+        'paymentMethod' => $r['payment_method'],
+        'total' => round((float)$r['total'], 2),
+        'cash' => round((float)$r['cash_amount'], 2),
+        'card' => round((float)$r['card_amount'], 2),
+    ], $salesStmt->fetchAll());
+
+    $summary = [
+        'totalOrders' => count($sales),
+        'totalRevenue' => round(array_sum(array_map(fn($s) => $s['total'], $sales)), 2),
+        'totalCash' => round(array_sum(array_map(fn($s) => $s['cash'], $sales)), 2),
+        'totalCard' => round(array_sum(array_map(fn($s) => $s['card'], $sales)), 2),
+    ];
+
+    respond(['from' => $from, 'to' => $to, 'summary' => $summary, 'perDay' => $perDay, 'sales' => $sales]);
+}
+
 // Suppliers
 if ($method === 'GET' && preg_match('#^/api/(admin/)?suppliers/?$#', $path)) {
     require_auth(['OWNER', 'MANAGER']);
@@ -1938,6 +2157,100 @@ if ($method === 'GET' && preg_match('#^/api/(admin/)?suppliers/(\d+)/?$#', $path
     $row = $stmt->fetch();
     if (!$row) not_found();
     respond($row);
+}
+
+// Products supplied by a given supplier, ordered LOW STOCK FIRST (reuses the existing
+// low-stock rule: stock <= low_stock_threshold). Used by the purchase-order builder.
+if ($method === 'GET' && preg_match('#^/api/(admin/)?suppliers/(\d+)/products/?$#', $path, $m)) {
+    require_auth(['OWNER', 'MANAGER']);
+    $supplierId = (int)$m[2];
+    $stmt = $pdo->prepare(
+        "SELECT id, name, sku, stock,
+                COALESCE(low_stock_threshold, 10) AS min_stock,
+                (stock <= COALESCE(low_stock_threshold, 10)) AS is_low
+         FROM products
+         WHERE supplier_id = ?
+         ORDER BY (stock <= COALESCE(low_stock_threshold, 10)) DESC, name ASC
+         LIMIT 500"
+    );
+    $stmt->execute([$supplierId]);
+    $out = array_map(function ($r) {
+        return [
+            'id' => (int)$r['id'],
+            'name' => $r['name'],
+            'sku' => $r['sku'],
+            'stock' => (int)$r['stock'],
+            'minStock' => (int)$r['min_stock'],
+            'isLowStock' => (bool)$r['is_low'],
+        ];
+    }, $stmt->fetchAll());
+    respond($out);
+}
+
+// Products the user last ordered from this supplier (from the existing purchase_orders
+// module). Lets the user re-order the same items in one click.
+if ($method === 'GET' && preg_match('#^/api/(admin/)?suppliers/(\d+)/last-order/?$#', $path, $m)) {
+    require_auth(['OWNER', 'MANAGER']);
+    $supplierId = (int)$m[2];
+    $poStmt = $pdo->prepare('SELECT id FROM purchase_orders WHERE supplier_id = ? ORDER BY id DESC LIMIT 1');
+    $poStmt->execute([$supplierId]);
+    $poId = $poStmt->fetchColumn();
+    if (!$poId) respond([]);
+    $stmt = $pdo->prepare(
+        "SELECT poi.product_id AS id, poi.ordered_qty AS last_qty, p.name, p.sku, p.stock,
+                COALESCE(p.low_stock_threshold, 10) AS min_stock,
+                (p.stock <= COALESCE(p.low_stock_threshold, 10)) AS is_low
+         FROM purchase_order_items poi
+         JOIN products p ON poi.product_id = p.id
+         WHERE poi.purchase_order_id = ?
+         ORDER BY p.name ASC"
+    );
+    $stmt->execute([(int)$poId]);
+    $out = array_map(function ($r) {
+        return [
+            'id' => (int)$r['id'],
+            'name' => $r['name'],
+            'sku' => $r['sku'],
+            'stock' => (int)$r['stock'],
+            'minStock' => (int)$r['min_stock'],
+            'isLowStock' => (bool)$r['is_low'],
+            'lastQty' => (int)$r['last_qty'],
+        ];
+    }, $stmt->fetchAll());
+    respond($out);
+}
+
+// Record an emailed purchase order into the existing purchase_orders module so it can
+// be shown as the supplier's "last order" next time.
+if ($method === 'POST' && preg_match('#^/api/(admin/)?suppliers/(\d+)/purchase-order/?$#', $path, $m)) {
+    $me = require_auth(['OWNER', 'MANAGER']);
+    $supplierId = (int)$m[2];
+    $data = json_input();
+    $items = is_array($data['items'] ?? null) ? $data['items'] : [];
+    if (count($items) === 0) respond(['error' => 'No items'], 400);
+
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('INSERT INTO purchase_orders (supplier_id, status, ordered_at, created_by, notes) VALUES (?, "ORDERED", NOW(), ?, ?)')
+            ->execute([$supplierId, (int)$me['id'], 'Emailed to supplier']);
+        $poId = (int)$pdo->lastInsertId();
+        $costStmt = $pdo->prepare('SELECT cost_price FROM products WHERE id = ?');
+        $itemStmt = $pdo->prepare('INSERT INTO purchase_order_items (purchase_order_id, product_id, ordered_qty, received_qty, cost_price) VALUES (?,?,?,0,?)');
+        foreach ($items as $it) {
+            $pid = (int)($it['productId'] ?? 0);
+            $qty = (int)($it['qty'] ?? 0);
+            if ($pid <= 0 || $qty <= 0) continue;
+            $costStmt->execute([$pid]);
+            $cost = (float)($costStmt->fetchColumn() ?: 0);
+            $itemStmt->execute([$poId, $pid, $qty, $cost]);
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        respond(['error' => $e->getMessage()], 400);
+    }
+    log_action($pdo, (int)$me['id'], 'supplier.purchaseOrderEmailed', ['supplierId' => $supplierId, 'poId' => $poId]);
+    respond(['id' => $poId, 'ok' => true]);
 }
 
 if ($method === 'POST' && preg_match('#^/api/(admin/)?suppliers/?$#', $path)) {
@@ -2406,6 +2719,10 @@ if ($method === 'POST' && $path === '/api/pos/bills/hold') {
     require_auth(['OWNER', 'MANAGER', 'CASHIER']);
     $data = json_input();
     $items = $data['items'] ?? [];
+    // The client may send items either as an array or as a JSON-encoded string.
+    if (is_string($items)) {
+        $items = json_decode($items, true) ?: [];
+    }
     $notes = $data['notes'] ?? null;
     if (!$items) respond(['error' => 'No items'], 400);
     $pdo->beginTransaction();
@@ -2416,6 +2733,33 @@ if ($method === 'POST' && $path === '/api/pos/bills/hold') {
         $stmt->execute([$billId, (int)$it['productId'], (int)$it['quantity']]);
     }
     $pdo->commit();
+    respond(['ok' => true]);
+}
+
+if ($method === 'GET' && $path === '/api/pos/bills/hold') {
+    require_auth(['OWNER', 'MANAGER', 'CASHIER']);
+    $bills = $pdo->query('SELECT id, notes, created_at FROM held_bills ORDER BY id DESC')->fetchAll();
+    $itemStmt = $pdo->prepare('SELECT product_id, quantity FROM held_bill_items WHERE bill_id = ?');
+    $out = array_map(function ($b) use ($itemStmt) {
+        $itemStmt->execute([(int)$b['id']]);
+        $items = array_map(function ($i) {
+            return ['productId' => (int)$i['product_id'], 'quantity' => (int)$i['quantity']];
+        }, $itemStmt->fetchAll());
+        return [
+            'id' => (int)$b['id'],
+            'notes' => $b['notes'],
+            'created_at' => $b['created_at'],
+            // Encoded as a string; the POS does JSON.parse(bill.items) when resuming.
+            'items' => json_encode($items),
+        ];
+    }, $bills);
+    respond($out);
+}
+
+if ($method === 'DELETE' && preg_match('#^/api/pos/bills/hold/(\d+)$#', $path, $m)) {
+    require_auth(['OWNER', 'MANAGER', 'CASHIER']);
+    // held_bill_items rows are removed via ON DELETE CASCADE.
+    $pdo->prepare('DELETE FROM held_bills WHERE id = ?')->execute([(int)$m[1]]);
     respond(['ok' => true]);
 }
 

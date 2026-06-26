@@ -36,7 +36,7 @@ const menuItems = [
     { href: '/admin/audit-logs', icon: Activity, label: 'Audit Trail', ownerOnly: true },
 ]
 
-export default function Sidebar() {
+export default function Sidebar({ mobileOpen = false, onClose }: { mobileOpen?: boolean; onClose?: () => void }) {
     const pathname = usePathname()
     const [userRole, setUserRole] = useState<string | null>(null)
 
@@ -69,7 +69,11 @@ export default function Sidebar() {
     })
 
     return (
-        <aside className="w-80 h-screen bg-[#09090B] border-r border-white/5 rounded-r-[40px] flex flex-col p-6 sticky top-0 overflow-y-auto hidden lg:flex shadow-2xl">
+        <aside className={cn(
+            "w-80 max-w-[82vw] h-screen bg-[#09090B] border-r border-white/5 rounded-r-[40px] flex flex-col p-6 overflow-y-auto shadow-2xl",
+            "fixed inset-y-0 left-0 z-50 transition-transform duration-300 lg:sticky lg:top-0 lg:z-auto lg:translate-x-0",
+            mobileOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        )}>
             <div className="flex items-center gap-4 px-2 mb-10">
                 <div className="h-10 relative flex items-center justify-center bg-primary rounded-xl border border-white/10 px-3 transition-all shadow-lg shadow-primary/20">
                     <Image
@@ -93,6 +97,7 @@ export default function Sidebar() {
                         <Link
                             key={item.href}
                             href={item.href}
+                            onClick={onClose}
                             className={cn(
                                 "sidebar-item flex items-center justify-between group px-4 py-3.5 rounded-2xl transition-all duration-300",
                                 isActive

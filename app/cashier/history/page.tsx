@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useMemo, useState, useDeferredValue } from 'react'
-import { History, Search, ChevronLeft, ChevronRight, ShoppingCart, LogOut, ArrowLeft } from 'lucide-react'
+import { History, Search, ChevronLeft, ChevronRight, ShoppingCart, LogOut, ArrowLeft, Printer } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { API_URL } from '@/lib/api-config'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useRouter } from 'next/navigation'
 import CashierSidebar from '@/components/CashierSidebar'
+import { ReceiptModal } from '@/components/ReceiptModal'
 
 interface SaleRecord {
     id: number
@@ -37,6 +38,35 @@ export default function CashierHistoryPage() {
     const pageSize = 25
     const apiUrl = API_URL
     const router = useRouter()
+    const [receipt, setReceipt] = useState<any>(null)
+
+    // Rebuild a printable bill from a past sale record so it can be re-printed.
+    const openReceipt = (sale: any) => {
+        const subtotal = Number(sale.subtotal ?? 0)
+        const tax = Number(sale.tax ?? 0)
+        const total = Number(sale.total ?? 0)
+        setReceipt({
+            receiptNumber: sale.receipt_number || `#${sale.id}`,
+            createdAt: sale.created_at,
+            items: (sale.items || []).map((i: any) => ({
+                name: i.product?.name || 'Item',
+                qty: Number(i.quantity ?? 0),
+                price: Number(i.price ?? 0),
+                lineTotal: Number(i.subtotal ?? (Number(i.price ?? 0) * Number(i.quantity ?? 0))),
+            })),
+            subtotal,
+            tax,
+            discount: Math.max(0, subtotal + tax - total),
+            total,
+            paymentMethod: sale.payment_method || 'cash',
+            cashReceived: Number(sale.cash_amount ?? 0),
+            change: 0,
+            splitPayments: sale.payment_method === 'split'
+                ? { cash: Number(sale.cash_amount ?? 0), card: Number(sale.card_amount ?? 0) }
+                : null,
+            customer: sale.customer ? { name: sale.customer.name, phone: sale.customer.phone } : null,
+        })
+    }
 
     useEffect(() => {
         const timer = setTimeout(() => {
@@ -74,7 +104,7 @@ export default function CashierHistoryPage() {
                 const token = localStorage.getItem('token')
                 if (!token) return
 
-                const res = await fetch(`${apiUrl}/sales`, {
+                const res = await fetch(`${apiUrl}/sales?limit=all`, {
                     method: 'GET',
                     headers: {
                         'Authorization': `Bearer ${token}`,
@@ -156,36 +186,37 @@ export default function CashierHistoryPage() {
         <div className="flex h-screen bg-white text-purple-900 overflow-hidden font-sans">
             <CashierSidebar />
 
-            <main className="flex-1 flex flex-col bg-transparent p-6 overflow-hidden">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div className="flex items-start gap-4">
+            <main className="flex-1 flex flex-col bg-transparent p-4 pb-24 lg:p-6 overflow-y-auto lg:overflow-hidden">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 lg:gap-6">
+                    <div className="flex items-start gap-3 lg:gap-4">
                         <Link
                             href="/"
-                            className="w-10 h-10 rounded-xl bg-white border border-purple-100 text-purple-700 flex items-center justify-center hover:bg-purple-50 transition-all"
+                            className="w-10 h-10 rounded-xl bg-white border border-purple-100 text-purple-700 flex items-center justify-center hover:bg-purple-50 transition-all shrink-0"
                         >
                             <ArrowLeft size={18} />
                         </Link>
                         <div>
-                            <h2 className="text-3xl font-black text-dark font-outfit uppercase tracking-tight">Cashier History</h2>
-                            <p className="text-purple-800 mt-1 italic text-sm font-semibold">Purchased product history for cashier operations.</p>
+                            <h2 className="text-xl lg:text-3xl font-black text-dark font-outfit uppercase tracking-tight leading-none">Cashier History</h2>
+                            <p className="text-purple-800 mt-1 italic text-xs lg:text-sm font-semibold">Purchased product history for cashier operations.</p>
                         </div>
                     </div>
-                    <div className="flex items-center gap-3">
-                        <div className="relative group">
+                    <div className="flex items-center gap-3 w-full md:w-auto">
+                        <div className="relative group w-full md:w-auto">
                             <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-purple-600 group-focus-within:text-primary transition-colors" size={18} />
                             <input
                                 type="text"
                                 placeholder="Search history..."
                                 value={search}
                                 onChange={e => setSearch(e.target.value)}
-                                className="bg-white border border-purple-100 rounded-2xl pl-12 pr-6 py-3 w-64 focus:ring-2 focus:ring-primary/10 focus:border-primary/20 outline-none transition-all text-sm font-semibold text-purple-900 placeholder:text-purple-600"
+                                className="bg-white border border-purple-100 rounded-2xl pl-12 pr-6 py-3 w-full md:w-64 focus:ring-2 focus:ring-primary/10 focus:border-primary/20 outline-none transition-all text-sm font-semibold text-purple-900 placeholder:text-purple-600"
                             />
                         </div>
                     </div>
                 </div>
 
-                <div className="glass-card rounded-[40px] overflow-hidden border-purple-50 shadow-xl bg-white/80 mt-8">
-                    <div className="overflow-x-auto">
+                <div className="glass-card rounded-2xl lg:rounded-[40px] overflow-hidden border-purple-50 shadow-xl bg-white/80 mt-4 lg:mt-8">
+                    {/* Desktop table */}
+                    <div className="overflow-x-auto hidden lg:block">
                         <table className="w-full text-left">
                             <thead>
                                 <tr className="border-b border-purple-100 bg-purple-50/50">
@@ -241,9 +272,18 @@ export default function CashierHistoryPage() {
                                                 </span>
                                             </td>
                                             <td className="px-8 py-6">
-                                                <span className="text-sm font-bold text-purple-900">
-                                                    {item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A'}
-                                                </span>
+                                                <div className="flex items-center justify-between gap-3">
+                                                    <span className="text-sm font-bold text-purple-900">
+                                                        {item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A'}
+                                                    </span>
+                                                    <button
+                                                        onClick={() => openReceipt(item)}
+                                                        title="Print / reprint bill"
+                                                        className="w-9 h-9 rounded-xl bg-purple-50/50 border border-purple-100 flex items-center justify-center text-primary hover:bg-primary hover:text-white transition-all shrink-0"
+                                                    >
+                                                        <Printer size={15} />
+                                                    </button>
+                                                </div>
                                             </td>
                                         </tr>
                                     ))
@@ -251,8 +291,58 @@ export default function CashierHistoryPage() {
                             </tbody>
                         </table>
                     </div>
+
+                    {/* Mobile card list — no horizontal scroll */}
+                    <div className="lg:hidden divide-y divide-purple-50">
+                        {loading ? (
+                            [...Array(5)].map((_, i) => (
+                                <div key={i} className="h-24 bg-purple-50/30 animate-pulse" />
+                            ))
+                        ) : pagedData.length === 0 ? (
+                            <div className="py-16 text-center text-purple-600 font-bold uppercase tracking-[0.3em] text-[10px] opacity-60">
+                                No Records Found
+                            </div>
+                        ) : (
+                            pagedData.map((item) => (
+                                <div key={item.id} className="p-4">
+                                    <div className="flex items-start justify-between gap-2 mb-2">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <div className="w-9 h-9 rounded-xl bg-purple-50/50 border border-purple-100 flex items-center justify-center text-primary shrink-0">
+                                                <History size={16} />
+                                            </div>
+                                            <div className="min-w-0">
+                                                <p className="text-primary font-black text-xs tracking-tight uppercase truncate">{item.receipt_number ?? `#${item.id}`}</p>
+                                                <p className="text-[10px] text-purple-500 font-bold">{item.created_at ? new Date(item.created_at).toLocaleString() : 'N/A'}</p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => openReceipt(item)}
+                                            title="Print / reprint bill"
+                                            className="w-9 h-9 rounded-xl bg-purple-50/50 border border-purple-100 flex items-center justify-center text-primary hover:bg-primary hover:text-white transition-all shrink-0"
+                                        >
+                                            <Printer size={15} />
+                                        </button>
+                                    </div>
+                                    {Array.isArray(item.items) && item.items.length > 0 && (
+                                        <div className="pl-11 mb-2 space-y-0.5">
+                                            {item.items.map(line => (
+                                                <div key={line.id} className="text-[11px] font-semibold text-purple-700">
+                                                    {(line.product?.name ?? 'Item').toString()} × {line.quantity ?? 0}
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                    <div className="flex items-center justify-between gap-2 pl-11">
+                                        <span className="text-[10px] font-black uppercase tracking-widest text-purple-400">{item.payment_method ?? 'N/A'}</span>
+                                        <span className="text-sm font-black text-purple-900">${Number(item.total ?? 0).toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+
                     {!loading && filteredData.length > 0 && (
-                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-8 py-4 border-t border-purple-100 bg-white/70">
+                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-5 lg:px-8 py-4 border-t border-purple-100 bg-white/70">
                             <div className="text-[10px] font-black uppercase tracking-widest text-purple-600">
                                 Showing {(safePage - 1) * pageSize + 1}–{Math.min(safePage * pageSize, filteredData.length)} of {filteredData.length}
                             </div>
@@ -285,6 +375,8 @@ export default function CashierHistoryPage() {
                     )}
                 </div>
             </main>
+
+            {receipt && <ReceiptModal data={receipt} onClose={() => setReceipt(null)} />}
         </div>
     )
 }
