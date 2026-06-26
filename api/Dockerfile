@@ -12,6 +12,10 @@ RUN docker-php-ext-install pdo pdo_mysql \
     && sed -ri 's/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf \
     && echo "ServerName localhost" >> /etc/apache2/apache2.conf
 
+# Apache needs exactly one MPM; the base image can end up with both prefork and
+# event enabled ("More than one MPM loaded"). Force prefork (required by mod_php).
+RUN a2dismod mpm_event mpm_worker 2>/dev/null; a2enmod mpm_prefork
+
 # Copy the API source into the Apache web root.
 COPY . /var/www/html/
 
