@@ -1,121 +1,132 @@
-# Deploying Spirited Wines POS to Vercel
+# Deploying Spirited Wines POS
 
-This app has three parts. XAMPP runs all three locally; Vercel runs two of them,
-and the **database must live on an external managed MySQL** (Vercel has no DB).
+This app is split across three services. Don't try to run it all on one platform —
+the PHP API can't run on Vercel (explained below), so it lives on Railway.
 
 ```
-Next.js frontend  ──▶  PHP API (api/index.php)  ──▶  MySQL
-   (Vercel)              (Vercel, vercel-php)         (external managed MySQL)
+Browser ── final-pos-nb6u.vercel.app        Next.js frontend     → Vercel
+              │  NEXT_PUBLIC_API_URL
+              ▼
+        ...up.railway.app/api                PHP API (Docker)     → Railway
+              │  PDO + TLS
+              ▼
+        Aiven MySQL  (defaultdb)             Database             → Aiven
 ```
 
-Both the frontend and the PHP API run in **one Vercel project** on the **same
-domain**, so there is no CORS or mixed-content to fight.
+| Layer | Platform | Notes |
+|------|----------|-------|
+| Frontend (Next.js) | **Vercel** | Auto-deploys from `main`. Pure Next.js — **no `vercel.json`**. |
+| API (PHP) | **Railway** | Docker (`api/Dockerfile`), Root Directory = `api`. |
+| Database (MySQL) | **Aiven** | Free MySQL, TLS required. |
+
+Everything auto-deploys on `git push origin main`: Vercel rebuilds the frontend,
+Railway rebuilds the API.
 
 ---
 
-## 1. Create a managed MySQL database
+## 1. Database — Aiven (MySQL)
 
-Pick a provider that allows runtime `ALTER TABLE` (this app adjusts its own schema
-on boot). Good choices: **Aiven**, **Railway**, **TiDB Cloud Serverless**,
-**Clever Cloud**. ⚠️ **Do NOT use PlanetScale** — it blocks the runtime DDL this
-app performs.
+Use a managed MySQL that allows runtime `ALTER TABLE` (this app adjusts its own
+schema on boot). Aiven's free MySQL works. ⚠️ **Not PlanetScale** (it blocks runtime DDL).
 
-1. Create a MySQL service (the provider gives you a ready database, e.g. Aiven's
-   `defaultdb`). You don't need to name it `pos_project` — just set `DB_NAME` to
-   whatever the provider gives you.
-2. **Import your real data**, not `database.sql` (that's schema-only). Your ~14k
-   products live in your local XAMPP DB. A full export has already been made for
-   you at `spirited_dump.sql` (schema + all data). Load it into the cloud DB:
-   ```
-   "C:/xampp/mysql/bin/mysql.exe" --host=HOST --port=PORT --user=USER \
-     --password=PASS --ssl --ssl-verify-server-cert=0 DBNAME < spirited_dump.sql
-   ```
-   (or use a GUI like HeidiSQL → "Run SQL file"). To regenerate the export later:
-   ```
+1. **aiven.io** → create a **MySQL Free** service → wait until *Running*.
+2. Copy the connection details: **Host, Port, User** (`avnadmin`), **Password**,
+   **Database** (`defaultdb`). SSL is **required**.
+3. **Import your real data** — NOT `database.sql` (that's schema-only; your ~14k
+   products live in your local XAMPP DB). Export the full local DB, then load it:
+   ```bash
+   # export everything (schema + data) from local XAMPP
    "C:/xampp/mysql/bin/mysqldump.exe" -u root --single-transaction \
      --skip-lock-tables --default-character-set=utf8mb4 pos_project > spirited_dump.sql
    ```
-3. Copy the connection details: host, port, database, user, password.
-   Most managed MySQL requires TLS → you'll set `DB_SSL=1`.
+   The XAMPP `mysql.exe` client (MariaDB) **cannot** connect to Aiven's MySQL 8
+   (`caching_sha2_password` plugin error). Import with a MySQL-8-aware tool
+   instead — **HeidiSQL** ("Run SQL file") or a short Node script using `mysql2`
+   (handles MySQL 8 auth + SSL):
+   ```js
+   const fs = require('fs'); const mysql = require('mysql2/promise');
+   const conn = await mysql.createConnection({
+     host:'HOST', port:PORT, user:'avnadmin', password:'PASS',
+     database:'defaultdb', ssl:{rejectUnauthorized:false}, multipleStatements:true });
+   await conn.query(fs.readFileSync('spirited_dump.sql','utf8'));
+   ```
 
-## 2. Push the repo to GitHub
+## 2. API — Railway (PHP in Docker)
 
-```bash
-git add .
-git commit -m "chore: prepare for Vercel deploy (env-driven config, vercel.json)"
-git push
-```
+The API is served by `api/Dockerfile` (PHP 8.2 CLI + the built-in server through
+`api/router.php`, exactly like local dev).
 
-(`.env.local` and real secrets stay out of git — only `.env.example` is committed.)
+1. **railway.app** → **New Project → Deploy from GitHub repo** → pick `final-pos`.
+2. Service **Settings → Source → Root Directory** = **`api`**. Railway then builds
+   `api/Dockerfile` automatically.
+3. **Variables** (Raw Editor) — set these (values from step 1):
+   ```
+   DB_HOST=...        DB_USER=avnadmin
+   DB_PORT=...        DB_PASS=...
+   DB_NAME=defaultdb  DB_SSL=1
+   TOKEN_SECRET=<long random, e.g. openssl rand -hex 32>
+   ALLOWED_ORIGINS=https://<your-vercel-domain>   # or * while testing
+   PORT=8080
+   ```
+4. **Settings → Networking → Generate Domain** (port **8080**).
+5. Verify: `https://<railway-domain>/api/health` → `{"status":"ok"}`.
 
-## 3. Create the Vercel project
+## 3. Frontend — Vercel (Next.js)
 
-1. vercel.com → **Add New → Project** → import this GitHub repo.
-2. Framework preset: **Next.js** (auto-detected). Root directory: repo root.
-3. Add **Environment Variables** (Settings → Environment Variables):
-
-   | Name | Value |
-   |------|-------|
-   | `NEXT_PUBLIC_API_URL` | `/api` |
-   | `DB_HOST` | _from step 1_ |
-   | `DB_PORT` | `3306` (or provider's) |
-   | `DB_NAME` | `pos_project` |
-   | `DB_USER` | _from step 1_ |
-   | `DB_PASS` | _from step 1_ |
-   | `DB_SSL` | `1` |
-   | `TOKEN_SECRET` | a long random string (`openssl rand -hex 32`) |
-   | `ALLOWED_ORIGINS` | `*` (same-origin setup) |
-
-4. **Deploy.**
-
-## 4. Verify
-
-- `https://your-app.vercel.app/api/health` → should return `{"status":"ok"}`.
-- Open the app, log in, load products, make a test sale.
-
-If `/api/health` fails, see Troubleshooting below.
-
----
-
-## Security — do BEFORE sharing the public URL
-
-On localhost these were fine; on a public URL they are real risks:
-
-- [ ] **Change the demo passwords.** The login page shows demo credentials —
-      anyone who opens the site can log in as the owner. Change them (or remove
-      the on-screen hint).
-- [ ] **`TOKEN_SECRET`** is a strong random value in Vercel (not the default).
-- [ ] **DB password** is the provider's strong password (never root/empty).
-- [ ] **`ALLOWED_ORIGINS`** — only loosen from `*` if you split onto another
-      domain; then set it to your exact frontend origin.
+1. **vercel.com → Add New → Project** → import `final-pos`. Framework = **Next.js**,
+   Root Directory = repo root. There is **no `vercel.json`** — keep it that way.
+2. **Environment Variables** → set:
+   ```
+   NEXT_PUBLIC_API_URL = https://<railway-domain>/api
+   ```
+3. Deploy. `NEXT_PUBLIC_*` is baked at build time, so **any change to this value
+   requires a redeploy** (Deployments → ⋯ → Redeploy).
+4. Open the Vercel URL → log in → products load from Aiven.
 
 ---
+
+## Environment variables — which go where
+
+| Variable | Vercel (frontend) | Railway (API) |
+|----------|:---:|:---:|
+| `NEXT_PUBLIC_API_URL` | ✅ | — |
+| `DB_HOST` `DB_PORT` `DB_NAME` `DB_USER` `DB_PASS` `DB_SSL` | — | ✅ |
+| `TOKEN_SECRET` | — | ✅ |
+| `ALLOWED_ORIGINS` | — | ✅ |
+| `PORT` (=8080) | — | ✅ |
+
+(`api/config.php` reads all of these via `getenv()`, falling back to local XAMPP
+defaults for development.)
+
+## Security — before going public
+
+- [ ] **Change the demo owner password** — the login page shows credentials anyone
+      can use. Log in → Admin → Users.
+- [ ] `TOKEN_SECRET` is a strong random value (not the committed default).
+- [ ] DB password is the provider's generated password (never root/empty).
+- [ ] `ALLOWED_ORIGINS` set to your exact Vercel domain (tighten from `*`).
+
+## Why the API is on Railway and not Vercel
+
+`vercel-php` can't host this app's single-file front-controller:
+- Vercel serverless functions must live in a nested `/api` dir, which collides
+  with both the Next.js build (`ENOENT .next/output/config.json`) and this repo's
+  layout. Putting `functions` in a Next.js `vercel.json` breaks the frontend build.
+- The PHP-Apache base image also failed with `More than one MPM loaded`.
+
+So the API runs in a plain Docker container (PHP built-in server) on Railway —
+identical to local dev, nothing exotic.
 
 ## Troubleshooting
 
-- **`/api/health` 500 / "Server error"** — DB connection. Re-check `DB_*` vars and
-  that `DB_SSL=1`. Confirm the DB allows connections from anywhere (0.0.0.0/0) or
-  from Vercel's egress.
-- **Build error: unknown runtime `vercel-php@0.7.4`** — pin the current version.
-  Check https://github.com/vercel-community/php for the latest and update the
-  number in `vercel.json`.
-- **PHP function can't find `db.php` / `auth.php`** — they must deploy alongside
-  `api/index.php`. They're in the same folder, so this normally just works; if not,
-  add `"includeFiles": "api/**"` under the function in `vercel.json`.
-- **401 on every request after login** — the `Authorization` header isn't reaching
-  PHP. Confirm the login response returns a token and the app sends
-  `Authorization: Bearer <token>`. The API reads `HTTP_AUTHORIZATION`, which
-  vercel-php forwards.
-- **Slow first request after idle** — serverless cold start + the once-per-hour
-  schema bootstrap re-running on a fresh container. Harmless; warms up after.
-
----
-
-## Note on this route
-
-Running PHP on Vercel via the community `vercel-php` runtime works but is the
-fiddliest option (cold starts, ephemeral filesystem, community-maintained
-runtime). If you ever hit friction, a cheap shared PHP/cPanel host (Hostinger
-etc.) for `api/` + this same Vercel project for the frontend is a lower-stress
-alternative — just set `NEXT_PUBLIC_API_URL` to that host's HTTPS URL and
-`ALLOWED_ORIGINS` to your Vercel domain.
+- **API 500 with no body** → temporarily set `display_errors` to `1` at the top of
+  `api/index.php`, redeploy, read the error, then set it back to `0`.
+- **`1064 ... syntax near '"OWNER"...'`** → Aiven's MySQL 8 enables `ANSI_QUOTES`
+  (and `ONLY_FULL_GROUP_BY`), which break this app's MariaDB-style SQL.
+  `api/db.php` clears `sql_mode` per session (`SET SESSION sql_mode = ''`) to fix it.
+- **Railway "Crashed" instantly** → Root Directory not set to `api` (it tried to
+  build the Next app). Set it to `api`.
+- **CORS blocked in browser** → set Railway `ALLOWED_ORIGINS` to the exact Vercel
+  origin; redeploy the API.
+- **Frontend calls the wrong API** → `NEXT_PUBLIC_API_URL` is baked at build time;
+  change it then **redeploy** the Vercel project.
