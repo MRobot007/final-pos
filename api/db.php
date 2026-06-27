@@ -22,6 +22,10 @@ function get_db(): PDO {
         // TCP+TLS handshake to the (possibly cross-region) managed MySQL on every
         // request — the dominant cost of each API call.
         PDO::ATTR_PERSISTENT => true,
+        // Apply the SQL mode at connect time (once per persistent connection)
+        // instead of issuing a SET on every request — saves one DB round-trip
+        // per API call. See the ANSI_QUOTES note below for why this is needed.
+        PDO::MYSQL_ATTR_INIT_COMMAND => "SET SESSION sql_mode = ''",
     ];
 
     // Managed MySQL providers (Aiven, Railway, TiDB, etc.) require a TLS
@@ -35,17 +39,11 @@ function get_db(): PDO {
         }
     }
 
-    $pdo = new PDO($dsn, $CONFIG['db']['user'], $CONFIG['db']['pass'], $options);
-
     // This app was written against MariaDB's permissive default SQL mode. Managed
     // MySQL 8 (e.g. Aiven) ships stricter modes — notably ANSI_QUOTES (which makes
-    // the app's double-quoted string literals fail) and ONLY_FULL_GROUP_BY. Clear
-    // the session sql_mode so the existing SQL runs unchanged.
-    try {
-        $pdo->exec("SET SESSION sql_mode = ''");
-    } catch (Throwable $e) {
-        // Non-fatal: if sql_mode can't be adjusted, continue with the default.
-    }
+    // the app's double-quoted string literals fail) and ONLY_FULL_GROUP_BY. The
+    // MYSQL_ATTR_INIT_COMMAND above clears sql_mode at connect time.
+    $pdo = new PDO($dsn, $CONFIG['db']['user'], $CONFIG['db']['pass'], $options);
 
     return $pdo;
 }
