@@ -73,7 +73,9 @@ export default function CashierSidebar({ className }: CashierSidebarProps) {
     }
 
     const role = user?.role?.toUpperCase() || 'CASHIER'
-    const historyHref = role === 'OWNER' || role === 'MANAGER' ? '/admin/sales' : '/cashier/history'
+    // Inside the POS, the History button always opens the in-POS history view,
+    // regardless of role (owners/managers used to be bounced to /admin/sales).
+    const historyHref = '/cashier/history'
 
     return (
         <nav className={cn(
@@ -114,7 +116,7 @@ export default function CashierSidebar({ className }: CashierSidebarProps) {
                 )}
 
                 {/* History Button */}
-                {(pathname === '/cashier/history' || pathname === '/admin/sales') ? (
+                {pathname === '/cashier/history' ? (
                     <button className="w-12 h-12 rounded-2xl bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20">
                         <History size={22} />
                     </button>
