@@ -691,14 +691,14 @@ if ($method === 'GET' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
     }
     $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM products p $whereSql");
-    $countStmt->execute($params);
-    $total = (int)$countStmt->fetchColumn();
-
+    // Fold the total count into the same query via a window function so we make
+    // one DB round-trip instead of two (a separate COUNT). Round-trips dominate
+    // latency when the DB is in a different region from the API.
     $stmt = $pdo->prepare(
         "SELECT p.id, p.name, p.sku, p.barcode, p.brand, p.is_alcohol, p.mrp,
                 p.bottle_size, p.price, p.stock, p.low_stock_threshold, p.supplier_id,
-                p.category_id, c.id AS cat_id, c.name AS cat_name
+                p.category_id, c.id AS cat_id, c.name AS cat_name,
+                COUNT(*) OVER() AS total_count
          FROM products p
          LEFT JOIN categories c ON p.category_id = c.id
          $whereSql
@@ -707,6 +707,7 @@ if ($method === 'GET' && preg_match('#^/api/(admin/)?products/?$#', $path)) {
     );
     $stmt->execute($params);
     $rows = $stmt->fetchAll();
+    $total = $rows ? (int)$rows[0]['total_count'] : 0;
     $out = array_map(function($r) {
         return [
             'id' => (int)$r['id'],
