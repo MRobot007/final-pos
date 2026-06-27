@@ -17,6 +17,11 @@ function get_db(): PDO {
     $options = [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        // Reuse the DB connection across requests. The PHP built-in server is a
+        // single long-lived process, so a persistent connection avoids a fresh
+        // TCP+TLS handshake to the (possibly cross-region) managed MySQL on every
+        // request — the dominant cost of each API call.
+        PDO::ATTR_PERSISTENT => true,
     ];
 
     // Managed MySQL providers (Aiven, Railway, TiDB, etc.) require a TLS

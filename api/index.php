@@ -32,12 +32,16 @@ require_once __DIR__ . '/db.php';
 require_once __DIR__ . '/auth.php';
 
 $pdo = get_db();
-// Run schema bootstrap at most once per hour instead of on every request.
-// The DDL + bcrypt seeding is expensive; a temp marker file gates it.
-$schemaFlag = sys_get_temp_dir() . '/pos_schema_ok';
-if (!is_file($schemaFlag) || (time() - filemtime($schemaFlag) > 3600)) {
-    ensure_table_defaults($pdo);
-    @touch($schemaFlag);
+// Schema bootstrap (DDL + seeding) is only needed for first-time setup. It's
+// expensive over a remote DB, so skip it entirely in production once the schema
+// exists (set SKIP_SCHEMA_BOOTSTRAP=1). Otherwise run it at most once per hour,
+// gated by a temp marker file.
+if (getenv('SKIP_SCHEMA_BOOTSTRAP') !== '1') {
+    $schemaFlag = sys_get_temp_dir() . '/pos_schema_ok';
+    if (!is_file($schemaFlag) || (time() - filemtime($schemaFlag) > 3600)) {
+        ensure_table_defaults($pdo);
+        @touch($schemaFlag);
+    }
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
