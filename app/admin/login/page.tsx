@@ -94,21 +94,21 @@ export default function LoginPage() {
             <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-purple-50 rounded-full blur-[100px] -translate-x-1/2 -translate-y-1/2 opacity-50" />
             <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-purple-100 rounded-full blur-[100px] translate-x-1/2 translate-y-1/2 opacity-50" />
 
-            <div className="login-card glass-card w-full max-w-lg rounded-[40px] p-12 relative overflow-hidden border-purple-50 shadow-2xl shadow-purple-900/10">
+            <div className="login-card glass-card w-full max-w-md rounded-3xl p-8 lg:p-10 relative overflow-hidden border-purple-50 shadow-xl shadow-purple-900/10">
                 <div className="relative z-10">
-                    <div className="animate-in mb-10 flex flex-col items-center">
-                        <div className="h-24 px-8 py-4 bg-primary rounded-[2.5rem] border border-white/10 shadow-2xl relative group hover:scale-105 transition-all duration-500 flex items-center justify-center shadow-primary/30">
+                    <div className="animate-in mb-8 flex flex-col items-center">
+                        <div className="h-20 px-6 py-3 bg-primary rounded-3xl shadow-lg shadow-primary/25 flex items-center justify-center">
                             <Image
                                 src="/logo.avif"
                                 alt="Spirited Wines Logo"
                                 width={180}
                                 height={60}
-                                className="h-full w-auto object-contain filter drop-shadow-[0_0_12px_rgba(255,255,255,0.2)]"
+                                className="h-full w-auto object-contain"
                                 priority
                             />
                         </div>
-                        <h1 className="text-4xl font-black font-outfit text-primary tracking-[0.1em] uppercase mt-6">Spirited Wines</h1>
-                        <p className="text-purple-800 mt-2 font-black uppercase text-[10px] tracking-[0.3em] opacity-80">Next Gen POS Administration</p>
+                        <h1 className="text-3xl font-black font-outfit text-primary tracking-wide uppercase mt-5">Spirited Wines</h1>
+                        <p className="text-purple-700 mt-1.5 font-bold uppercase text-[10px] tracking-[0.25em]">Next Gen POS Administration</p>
                     </div>
 
                     {error && (
@@ -152,7 +152,7 @@ export default function LoginPage() {
                         <button
                             type="submit"
                             disabled={loading}
-                            className="animate-in premium-button w-full h-14 flex items-center justify-center gap-2 text-white group shadow-xl shadow-primary/20"
+                            className="animate-in w-full h-14 rounded-2xl bg-primary hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 text-white group shadow-lg shadow-primary/20 disabled:opacity-70"
                         >
                             {loading ? (
                                 <Loader2 className="animate-spin" size={20} />
@@ -165,25 +165,25 @@ export default function LoginPage() {
                         </button>
                     </form>
 
-                    <div className="animate-in mt-12 pt-8 border-t border-purple-50 flex flex-col items-center">
-                        <p className="text-[10px] text-purple-600 uppercase tracking-[0.3em] font-black mb-6">Quick Access Credentials</p>
-                        <div className="grid grid-cols-2 gap-4 w-full">
-                            <div
+                    <div className="animate-in mt-8 pt-6 border-t border-purple-50 flex flex-col items-center">
+                        <p className="text-[10px] text-purple-500 uppercase tracking-[0.25em] font-bold mb-3">Quick Access</p>
+                        <div className="grid grid-cols-2 gap-3 w-full">
+                            <button
+                                type="button"
                                 onClick={() => { setEmail('owner@spiritedwines.com'); setPassword('admin123'); }}
-                                className="bg-purple-50/50 border border-purple-100 p-4 rounded-3xl text-center hover:bg-purple-100 transition-colors cursor-pointer group"
+                                className="bg-purple-50/60 border border-purple-100 p-3 rounded-2xl text-center hover:bg-purple-100 transition-colors"
                             >
-                                <p className="text-[10px] text-primary font-black uppercase mb-1">Owner</p>
-                                <p className="text-[9px] text-purple-700 group-hover:text-primary transition-colors font-bold break-all">owner@spiritedwines.com</p>
-                                <p className="text-xs text-purple-600 group-hover:text-primary transition-colors font-bold">admin123</p>
-                            </div>
-                            <div
+                                <p className="text-[10px] text-primary font-black uppercase">Owner</p>
+                                <p className="text-[11px] text-purple-600 font-semibold mt-0.5">admin123</p>
+                            </button>
+                            <button
+                                type="button"
                                 onClick={() => { setEmail('manager@spiritedwines.com'); setPassword('admin123'); }}
-                                className="bg-purple-50/50 border border-purple-100 p-4 rounded-3xl text-center hover:bg-purple-100 transition-colors cursor-pointer group"
+                                className="bg-purple-50/60 border border-purple-100 p-3 rounded-2xl text-center hover:bg-purple-100 transition-colors"
                             >
-                                <p className="text-[10px] text-accent font-black uppercase mb-1">Manager</p>
-                                <p className="text-[9px] text-purple-700 group-hover:text-primary transition-colors font-bold break-all">manager@spiritedwines.com</p>
-                                <p className="text-xs text-purple-600 group-hover:text-primary transition-colors font-bold">admin123</p>
-                            </div>
+                                <p className="text-[10px] text-primary font-black uppercase">Manager</p>
+                                <p className="text-[11px] text-purple-600 font-semibold mt-0.5">admin123</p>
+                            </button>
                         </div>
                     </div>
                 </div>
